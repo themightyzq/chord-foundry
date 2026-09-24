@@ -160,6 +160,9 @@ target_include_directories(ChordFoundryTests PRIVATE
     Source
     Source/Audio)
 
+# The console test app has no use for JUCE's curl networking or web browser; leaving them
+# on makes juce_core reference libcurl, which the Linux CI runner does not link.
+target_compile_definitions(ChordFoundryTests PRIVATE JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0)
 target_link_libraries(ChordFoundryTests PRIVATE
     juce::juce_core
     juce::juce_audio_basics
