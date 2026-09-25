@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
 
 if(APPLE)
-    # Universal binary is mandatory: Soundminer will not load anything else (JUCE/CLAUDE.md section 5).
+    # Universal binary (arm64 + x86_64) for Apple Silicon and Intel Macs.
     set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Build architectures for macOS")
 endif()
 project(ChordFoundry VERSION 1.0.0 LANGUAGES CXX C)
