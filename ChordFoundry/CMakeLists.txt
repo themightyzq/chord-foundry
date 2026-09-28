@@ -3,6 +3,9 @@ cmake_minimum_required(VERSION 3.22)
 if(APPLE)
     # Universal binary (arm64 + x86_64) for Apple Silicon and Intel Macs.
     set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING "Build architectures for macOS")
+    # Minimum macOS 11.0 (the lowest a universal binary can target). Without it the app
+    # inherits the build machine's OS as its minimum and will not open on older Macs.
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 endif()
 project(ChordFoundry VERSION 1.0.0 LANGUAGES CXX C)
 
