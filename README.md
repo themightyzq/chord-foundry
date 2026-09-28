@@ -10,7 +10,11 @@ built-in synth, so you can audition a progression before exporting it.
 
 ## Install
 
-There are no packaged releases yet. Build from source (below).
+Download the latest build for your platform from the
+[Releases page](https://github.com/themightyzq/chord-foundry/releases/latest).
+The macOS build is universal (Apple Silicon and Intel) and needs macOS 11.0
+or later. The builds are unsigned: on macOS, right-click the app and choose
+Open the first time. Or build from source (below).
 
 ## Use
 
