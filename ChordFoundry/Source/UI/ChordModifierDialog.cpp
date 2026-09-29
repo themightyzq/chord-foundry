@@ -1,4 +1,7 @@
 #include "ChordModifierDialog.h"
+#include "../MusicTheory/MusicTheoryEngine.h"
+
+#include <algorithm>
 
 namespace ChordFoundry {
 
@@ -273,9 +276,16 @@ void ChordModifierDialog::ContentComponent::setupArpeggiatorSection()
     
     // Arpeggiator mode
     arpModeCombo = std::make_unique<juce::ComboBox>("arpModeCombo");
-    arpModeCombo->addItemList({"None", "Up", "Down", "Up-Down", "Down-Up", "Random", "Chord"}, 1);
-    
-    auto currentArpMode = modifiedChord.arpMode.isEmpty() ? "None" : modifiedChord.arpMode;
+    // Offer exactly the modes ArpeggiatorEngine implements.
+    for (int i = 0; i < static_cast<int>(MusicTheoryEngine::ARP_MODE_NAMES.size()); ++i)
+        arpModeCombo->addItem(MusicTheoryEngine::ARP_MODE_NAMES[static_cast<size_t>(i)], i + 1);
+
+    // A mode name the engine does not know (e.g. a legacy name) would render an empty
+    // combo and play as "None"; show "None" instead.
+    juce::String currentArpMode = modifiedChord.arpMode.isEmpty() ? juce::String("None") : modifiedChord.arpMode;
+    if (std::find(MusicTheoryEngine::ARP_MODE_NAMES.begin(), MusicTheoryEngine::ARP_MODE_NAMES.end(),
+                  currentArpMode) == MusicTheoryEngine::ARP_MODE_NAMES.end())
+        currentArpMode = "None";
     arpModeCombo->setText(currentArpMode, juce::dontSendNotification);
     
     arpModeCombo->addListener(&parentDialog);

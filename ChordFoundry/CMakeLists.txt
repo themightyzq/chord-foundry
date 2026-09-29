@@ -26,6 +26,7 @@ FetchContent_MakeAvailable(JUCE)
 # Create the main application target
 juce_add_gui_app(ChordFoundry
     COMPANY_NAME "ZQ SFX"
+    COMPANY_COPYRIGHT "Copyright (c) 2026 ZQ SFX"
     COMPANY_WEBSITE "https://www.zq-sfx.com"
     COMPANY_EMAIL "connect@zq-sfx.com"
     BUNDLE_ID "com.zqsfx.chordfoundry"
@@ -151,8 +152,15 @@ target_sources(ChordFoundryTests PRIVATE
     Source/Audio/ArpeggiatorEngine.h
     Source/Audio/ChordSynthesizer.cpp
     Source/Audio/ChordSynthesizer.h
+    Source/Data/ChordProgression.cpp
+    Source/Data/ChordProgression.h
+    Source/Export/MidiExporter.cpp
+    Source/Export/MidiExporter.h
+    Source/MusicTheory/MusicTheoryEngine.cpp
+    Source/MusicTheory/MusicTheoryEngine.h
     Tests/ArpeggiatorEngineTests.cpp
     Tests/ChordSynthesizerTests.cpp
+    Tests/MidiExporterTests.cpp
     Tests/TestMain.cpp)
 
 target_compile_definitions(ChordFoundryTests PRIVATE
@@ -170,6 +178,9 @@ target_link_libraries(ChordFoundryTests PRIVATE
     juce::juce_core
     juce::juce_audio_basics
     juce::juce_audio_devices
+    juce::juce_audio_formats
+    juce::juce_data_structures
+    juce::juce_graphics
     juce::juce_dsp)
 
 add_test(NAME ArpeggiatorEngineTests COMMAND ChordFoundryTests)

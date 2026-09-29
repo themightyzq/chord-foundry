@@ -19,7 +19,12 @@ bool MidiExporter::exportToFile(const juce::File& outputFile,
     juce::MidiMessageSequence track;
     
     // Add tempo meta event
-    double microsecondsPerQuarterNote = 60000000.0 / tempo;
+    // A zero, negative or NaN tempo would divide by zero / produce a nonsense tempo event.
+    if (!(tempo > 0.0f))
+        tempo = 120.0f;
+
+    // The tempo meta event stores microseconds per quarter note in 24 bits.
+    double microsecondsPerQuarterNote = juce::jlimit(1.0, 16777215.0, 60000000.0 / tempo);
     auto tempoEvent = juce::MidiMessage::tempoMetaEvent(static_cast<int>(microsecondsPerQuarterNote));
     track.addEvent(tempoEvent, 0.0);
     
@@ -73,6 +78,10 @@ bool MidiExporter::exportToFile(const juce::File& outputFile,
             sequence.reserve(arpeggiatedFloat.size());
             for (float note : arpeggiatedFloat)
                 sequence.push_back(static_cast<int>(std::round(note)));
+
+            // An invalid roman numeral/key/mode yields no notes; nothing to arpeggiate.
+            if (sequence.empty())
+                continue;
 
             // Map arp length to steps
             int stepsPerNote = 1; // Default to 16th
@@ -129,15 +138,27 @@ bool MidiExporter::exportToFile(const juce::File& outputFile,
     // Add the track to the file
     midiFile.addTrack(track);
     
-    // Write to file
-    juce::FileOutputStream stream(outputFile);
-    if (stream.openedOk())
+    // Write to a temporary file, then swap it over the target. FileOutputStream on an
+    // existing file appends (it positions at the end), so writing straight to
+    // outputFile would leave the old bytes in front of the new ones.
+    juce::TemporaryFile temp(outputFile);
+
     {
-        midiFile.writeTo(stream);
-        return true;
+        auto stream = temp.getFile().createOutputStream();
+        if (stream == nullptr || stream->getStatus().failed())
+            return false;
+
+        if (!midiFile.writeTo(*stream))
+            return false;
+
+        stream->flush();
+        if (stream->getStatus().failed())
+            return false;
+
+        stream.reset(); // close before the swap
     }
-    
-    return false;
+
+    return temp.overwriteTargetFileWithTemporary();
 }
 
 std::vector<int> MidiExporter::getMidiNotesForChord(const ChordData& chord,
