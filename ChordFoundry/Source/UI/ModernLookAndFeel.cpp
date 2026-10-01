@@ -48,15 +48,15 @@ const juce::Font ModernLookAndFeel::Typography::getHeaderFont()
     auto adjustedSize = baseFontSize * juce::jmax(0.8f, juce::jmin(1.2f, scaleFactor));
     
     // Create modern font with specific typeface
-    auto font = juce::Font("Helvetica Neue", adjustedSize, juce::Font::plain);
+    auto font = juce::Font(juce::FontOptions("Helvetica Neue", adjustedSize, juce::Font::plain));
     
     // If Helvetica Neue not available, try modern alternatives
     if (!font.getTypefaceName().contains("Helvetica"))
     {
-        font = juce::Font("Inter", adjustedSize, juce::Font::plain);
+        font = juce::Font(juce::FontOptions("Inter", adjustedSize, juce::Font::plain));
         if (!font.getTypefaceName().contains("Inter"))
         {
-            font = juce::Font("Segoe UI", adjustedSize, juce::Font::plain);
+            font = juce::Font(juce::FontOptions("Segoe UI", adjustedSize, juce::Font::plain));
         }
     }
     
@@ -71,10 +71,10 @@ const juce::Font ModernLookAndFeel::Typography::getSubheaderFont()
     auto baseFontSize = 22.0f;
     auto adjustedSize = baseFontSize * juce::jmax(0.8f, juce::jmin(1.2f, scaleFactor));
     
-    auto font = juce::Font("Helvetica Neue", adjustedSize, juce::Font::plain);
+    auto font = juce::Font(juce::FontOptions("Helvetica Neue", adjustedSize, juce::Font::plain));
     if (!font.getTypefaceName().contains("Helvetica"))
     {
-        font = juce::Font("Inter", adjustedSize, juce::Font::plain);
+        font = juce::Font(juce::FontOptions("Inter", adjustedSize, juce::Font::plain));
     }
     
     font = font.withExtraKerningFactor(0.03f);  // Subtle letter spacing
@@ -87,10 +87,10 @@ const juce::Font ModernLookAndFeel::Typography::getBodyFont()
     auto baseFontSize = 15.0f;  // Slightly smaller for cleaner look
     auto adjustedSize = baseFontSize * juce::jmax(0.8f, juce::jmin(1.2f, scaleFactor));
     
-    auto font = juce::Font("Helvetica Neue", adjustedSize, juce::Font::plain);
+    auto font = juce::Font(juce::FontOptions("Helvetica Neue", adjustedSize, juce::Font::plain));
     if (!font.getTypefaceName().contains("Helvetica"))
     {
-        font = juce::Font(adjustedSize);  // Default system font
+        font = juce::Font(juce::FontOptions(adjustedSize));  // Default system font
     }
     
     return font;
@@ -102,7 +102,7 @@ const juce::Font ModernLookAndFeel::Typography::getCaptionFont()
     auto baseFontSize = 13.0f;
     auto adjustedSize = baseFontSize * juce::jmax(0.8f, juce::jmin(1.2f, scaleFactor));
     
-    auto font = juce::Font(adjustedSize);
+    auto font = juce::Font(juce::FontOptions(adjustedSize));
     font = font.withExtraKerningFactor(0.02f);  // Slight letter spacing
     return font;
 }
@@ -113,7 +113,7 @@ const juce::Font ModernLookAndFeel::Typography::getSmallFont()
     auto baseFontSize = 11.0f;
     auto adjustedSize = baseFontSize * juce::jmax(0.8f, juce::jmin(1.2f, scaleFactor));
     
-    auto font = juce::Font(adjustedSize);
+    auto font = juce::Font(juce::FontOptions(adjustedSize));
     font = font.withExtraKerningFactor(0.03f);  // More spacing for small text
     return font;
 }
@@ -124,7 +124,7 @@ const juce::Font ModernLookAndFeel::Typography::getButtonFont()
     auto baseFontSize = 15.0f;  // Slightly smaller for cleaner buttons
     auto adjustedSize = baseFontSize * juce::jmax(0.8f, juce::jmin(1.2f, scaleFactor));
     
-    auto font = juce::Font(adjustedSize);
+    auto font = juce::Font(juce::FontOptions(adjustedSize));
     // Medium weight for buttons - using kerning instead of bold for modern look
     font = font.withExtraKerningFactor(0.04f);
     return font;
@@ -137,13 +137,13 @@ const juce::Font ModernLookAndFeel::Typography::getMonospacedFont()
     auto adjustedSize = baseFontSize * juce::jmax(0.8f, juce::jmin(1.2f, scaleFactor));
     
     // Try modern monospace fonts
-    auto font = juce::Font("SF Mono", adjustedSize, juce::Font::plain);
+    auto font = juce::Font(juce::FontOptions("SF Mono", adjustedSize, juce::Font::plain));
     if (!font.getTypefaceName().contains("Mono"))
     {
-        font = juce::Font("Consolas", adjustedSize, juce::Font::plain);
+        font = juce::Font(juce::FontOptions("Consolas", adjustedSize, juce::Font::plain));
         if (!font.getTypefaceName().contains("Consolas"))
         {
-            font = juce::Font(juce::Font::getDefaultMonospacedFontName(), adjustedSize, juce::Font::plain);
+            font = juce::Font(juce::FontOptions(juce::Font::getDefaultMonospacedFontName(), adjustedSize, juce::Font::plain));
         }
     }
     
@@ -156,10 +156,10 @@ const juce::Font ModernLookAndFeel::Typography::getDisplayFont()
     auto baseFontSize = 48.0f;  // Large for display elements
     auto adjustedSize = baseFontSize * juce::jmax(0.8f, juce::jmin(1.2f, scaleFactor));
     
-    auto font = juce::Font("Helvetica Neue", adjustedSize, juce::Font::plain);
+    auto font = juce::Font(juce::FontOptions("Helvetica Neue", adjustedSize, juce::Font::plain));
     if (!font.getTypefaceName().contains("Helvetica"))
     {
-        font = juce::Font(adjustedSize);
+        font = juce::Font(juce::FontOptions(adjustedSize));
     }
     
     font = font.withExtraKerningFactor(0.06f);  // Extra spacing for large text
@@ -172,7 +172,7 @@ const juce::Font ModernLookAndFeel::Typography::getLabelFont()
     auto baseFontSize = 12.0f;
     auto adjustedSize = baseFontSize * juce::jmax(0.8f, juce::jmin(1.2f, scaleFactor));
     
-    auto font = juce::Font(adjustedSize);
+    auto font = juce::Font(juce::FontOptions(adjustedSize));
     font = font.withExtraKerningFactor(0.05f);  // Wide spacing for labels
     return font.withHorizontalScale(0.95f);  // Slightly condensed
 }
@@ -263,6 +263,8 @@ void ModernLookAndFeel::drawButtonText(juce::Graphics& g, juce::TextButton& butt
                                      bool shouldDrawButtonAsHighlighted,
                                      bool shouldDrawButtonAsDown)
 {
+    juce::ignoreUnused(shouldDrawButtonAsDown);
+
     auto font = Typography::getButtonFont();
     g.setFont(font);
     
@@ -387,7 +389,7 @@ void ModernLookAndFeel::drawScrollbar(juce::Graphics& g, juce::ScrollBar& scroll
                                     bool isScrollbarVertical, int thumbStartPosition,
                                     int thumbSize, bool isMouseOver, bool isMouseDown)
 {
-    juce::ignoreUnused(x, y, isMouseDown);
+    juce::ignoreUnused(x, y, isMouseDown, scrollbar);
     
     auto bounds = juce::Rectangle<int>(0, 0, width, height);
     
@@ -642,7 +644,7 @@ juce::Colour ModernLookAndFeel::getChordColour(const juce::String& romanNumeral)
         return Colors::primary;        // Primary chords (I, IV, V)
     else if (romanNumeral.contains("ii") || romanNumeral.contains("iii") || romanNumeral.contains("vi"))
         return Colors::secondary;      // Secondary chords (ii, iii, vi)
-    else if (romanNumeral.contains("°") || romanNumeral.contains("vii"))
+    else if (romanNumeral.contains(juce::String::fromUTF8("\xC2\xB0")) || romanNumeral.contains("vii"))
         return Colors::accent;         // Diminished chords
     else
         return Colors::textSecondary;  // Default/other chords

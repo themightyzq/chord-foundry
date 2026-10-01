@@ -81,6 +81,22 @@ void ChordProgression::removeBlock(int blockIndex) {
     }
 }
 
+void ChordProgression::replaceBlock(int blockIndex, const BlockData& newBlock) {
+    if (blockIndex < 0 || blockIndex >= static_cast<int>(patternBlocks.size()))
+        return;
+
+    if (!isValidChordIndex(newBlock.chordIndex) || !isValidStep(newBlock.startStep) ||
+        newBlock.lengthSteps <= 0 || (newBlock.startStep + newBlock.lengthSteps) > MAX_STEPS)
+        return;
+
+    for (int i = 0; i < static_cast<int>(patternBlocks.size()); ++i) {
+        if (i != blockIndex && newBlock.overlaps(patternBlocks[static_cast<size_t>(i)]))
+            return;
+    }
+
+    patternBlocks[static_cast<size_t>(blockIndex)] = newBlock;
+}
+
 void ChordProgression::clearBlocks() {
     patternBlocks.clear();
 }
@@ -263,6 +279,7 @@ juce::ValueTree ChordProgression::toValueTree() const {
         blockTree.setProperty("lengthSteps", block.lengthSteps, nullptr);
         blockTree.setProperty("displayColor", static_cast<int>(block.displayColor.getARGB()), nullptr);
         blockTree.setProperty("hasModifierOverrides", block.hasModifierOverrides, nullptr);
+        blockTree.setProperty("newStrike", block.newStrike, nullptr);
         
         // Save modifier overrides if present
         if (block.hasModifierOverrides) {
@@ -273,6 +290,13 @@ juce::ValueTree ChordProgression::toValueTree() const {
             overridesTree.setProperty("voicing", block.modifierOverrides.voicing, nullptr);
             overridesTree.setProperty("arpMode", block.modifierOverrides.arpMode, nullptr);
             overridesTree.setProperty("arpLength", block.modifierOverrides.arpLength, nullptr);
+
+            juce::ValueTree overrideVoicing("CustomVoicing");
+            overrideVoicing.setProperty("numNotes", block.modifierOverrides.customVoicing.numNotes, nullptr);
+            overrideVoicing.setProperty("position", block.modifierOverrides.customVoicing.position, nullptr);
+            overrideVoicing.setProperty("spreadType", block.modifierOverrides.customVoicing.spreadType, nullptr);
+            overridesTree.appendChild(overrideVoicing, nullptr);
+
             blockTree.appendChild(overridesTree, nullptr);
         }
         
@@ -288,7 +312,7 @@ void ChordProgression::fromValueTree(const juce::ValueTree& tree) {
     
     // Load chords
     auto chordsTree = tree.getChildWithName("Chords");
-    for (int i = 0; i < chordsTree.getNumChildren(); ++i) {
+    for (int i = 0; i < chordsTree.getNumChildren() && static_cast<int>(chords.size()) < MAX_CHORDS; ++i) {
         auto chordTree = chordsTree.getChild(i);
         
         ChordData chord;
@@ -321,6 +345,7 @@ void ChordProgression::fromValueTree(const juce::ValueTree& tree) {
         block.lengthSteps = blockTree.getProperty("lengthSteps", 4);
         block.displayColor = juce::Colour(static_cast<juce::uint32>(static_cast<int>(blockTree.getProperty("displayColor", static_cast<int>(0xff1976d2)))));
         block.hasModifierOverrides = blockTree.getProperty("hasModifierOverrides", false);
+        block.newStrike = blockTree.getProperty("newStrike", false);
         
         // Load modifier overrides if present
         if (block.hasModifierOverrides) {
@@ -332,6 +357,13 @@ void ChordProgression::fromValueTree(const juce::ValueTree& tree) {
                 block.modifierOverrides.voicing = overridesTree.getProperty("voicing", "");
                 block.modifierOverrides.arpMode = overridesTree.getProperty("arpMode", "");
                 block.modifierOverrides.arpLength = overridesTree.getProperty("arpLength", "");
+
+                auto overrideVoicing = overridesTree.getChildWithName("CustomVoicing");
+                if (overrideVoicing.isValid()) {
+                    block.modifierOverrides.customVoicing.numNotes = overrideVoicing.getProperty("numNotes", 3);
+                    block.modifierOverrides.customVoicing.position = overrideVoicing.getProperty("position", 3);
+                    block.modifierOverrides.customVoicing.spreadType = overrideVoicing.getProperty("spreadType", 0);
+                }
             }
         }
         

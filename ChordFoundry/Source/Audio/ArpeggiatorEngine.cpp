@@ -79,26 +79,32 @@ std::vector<float> ArpeggiatorEngine::getArpeggioSequence(const std::vector<floa
     return notes;
 }
 
-// Ported from archive/core/arpeggiator.py: get_note_duration(arp_length, tempo)
-double ArpeggiatorEngine::getNoteLength(const juce::String& arpLength, float tempo)
+double ArpeggiatorEngine::getNoteLengthBeats(const juce::String& arpLength)
 {
     // duration_map, in units of quarter-note beats. Default (unrecognised
     // arpLength) is "1/16", matching duration_map.get(arp_length, 0.25).
-    double multiplier = 0.25;
+    if (arpLength == "1/8")
+        return 0.5;
+    if (arpLength == "1/4")
+        return 1.0;
+    if (arpLength == "1/2")
+        return 2.0;
 
-    if (arpLength == "1/16")
-        multiplier = 0.25;
-    else if (arpLength == "1/8")
-        multiplier = 0.5;
-    else if (arpLength == "1/4")
-        multiplier = 1.0;
-    else if (arpLength == "1/2")
-        multiplier = 2.0;
+    return 0.25;
+}
 
+int ArpeggiatorEngine::getNoteLengthSteps(const juce::String& arpLength)
+{
+    return static_cast<int>(getNoteLengthBeats(arpLength) * 4.0);
+}
+
+// Ported from archive/core/arpeggiator.py: get_note_duration(arp_length, tempo)
+double ArpeggiatorEngine::getNoteLength(const juce::String& arpLength, float tempo)
+{
     const double beatsPerSecond = static_cast<double>(tempo) / 60.0;
     const double beatDuration = 1.0 / beatsPerSecond;
 
-    return multiplier * beatDuration;
+    return getNoteLengthBeats(arpLength) * beatDuration;
 }
 
 } // namespace ChordFoundry

@@ -35,6 +35,10 @@ public:
 
     void runTest() override
     {
+        // A test must be open before the first expect(); the runner has no current result otherwise
+        // (this suite only passed before because it ran after another one).
+        beginTest("scratch directory can be created");
+
         const juce::File dir = juce::File::getSpecialLocation(juce::File::tempDirectory)
                                    .getNonexistentChildFile("ChordFoundryMidiExporterTests", "", false);
         expect(dir.createDirectory().wasOk());

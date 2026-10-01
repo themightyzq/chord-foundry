@@ -30,7 +30,7 @@ const std::unordered_map<juce::String, int> MusicTheoryEngine::KEY_TO_SEMITONE =
 };
 
 const std::unordered_map<juce::String, int> MusicTheoryEngine::ROMAN_TO_DEGREE = {
-    {"I", 0}, {"ii", 1}, {"iii", 2}, {"IV", 3}, {"V", 4}, {"vi", 5}, {"vii°", 6}
+    {"I", 0}, {"ii", 1}, {"iii", 2}, {"IV", 3}, {"V", 4}, {"vi", 5}, {diminishedRoman(), 6}
 };
 
 const std::vector<juce::String> MusicTheoryEngine::MODE_NAMES = {
@@ -319,9 +319,7 @@ std::vector<int> MusicTheoryEngine::applyStackedThirds(
 {
     // Standard closed voicing with specified number of notes
     auto voiced = chord;
-    int targetOctave = BASE_MIDI_NOTE + data.position * OCTAVE_SIZE;
-    
-    // Adjust to target octave
+    // Adjust to the octave given by data.position
     voiced = adjustToOctave(voiced, data.position);
     
     // Limit to requested number of notes
@@ -461,14 +459,26 @@ std::vector<int> MusicTheoryEngine::applyRootGuideTones(
 }
 
 // Validation functions
+juce::String MusicTheoryEngine::canonicalKey(const juce::String& key)
+{
+    // "C#/Db" -> "C#"
+    return key.upToFirstOccurrenceOf("/", false, false).trim();
+}
+
+juce::String MusicTheoryEngine::canonicalMode(const juce::String& mode)
+{
+    // "Major (Ionian)" -> "Major"
+    return mode.upToFirstOccurrenceOf(" (", false, false).trim();
+}
+
 bool MusicTheoryEngine::isValidKey(const juce::String& key)
 {
-    return KEY_TO_SEMITONE.find(key) != KEY_TO_SEMITONE.end();
+    return KEY_TO_SEMITONE.find(canonicalKey(key)) != KEY_TO_SEMITONE.end();
 }
 
 bool MusicTheoryEngine::isValidMode(const juce::String& mode)
 {
-    return std::find(MODE_NAMES.begin(), MODE_NAMES.end(), mode) != MODE_NAMES.end();
+    return std::find(MODE_NAMES.begin(), MODE_NAMES.end(), canonicalMode(mode)) != MODE_NAMES.end();
 }
 
 bool MusicTheoryEngine::isValidRoman(const juce::String& roman)
@@ -518,7 +528,7 @@ juce::Colour MusicTheoryEngine::getChordColor(const juce::String& roman)
     else if (roman == "ii" || roman == "iii" || roman == "vi") {
         return juce::Colour(0xff388e3c);  // Green - Secondary chords
     }
-    else if (roman == "vii°") {
+    else if (roman == diminishedRoman()) {
         return juce::Colour(0xffd32f2f);  // Red - Diminished
     }
     
@@ -543,20 +553,21 @@ bool MusicTheoryEngine::isChordMinor(const juce::String& roman)
 
 bool MusicTheoryEngine::isChordDiminished(const juce::String& roman)
 {
-    return roman == "vii°";
+    return roman == diminishedRoman();
 }
 
 // Private helper functions
 int MusicTheoryEngine::getKeyRootNote(const juce::String& key)
 {
-    auto it = KEY_TO_SEMITONE.find(key);
+    auto it = KEY_TO_SEMITONE.find(canonicalKey(key));
     return (it != KEY_TO_SEMITONE.end()) ? it->second : -1;
 }
 
 std::vector<int> MusicTheoryEngine::getModeIntervals(const juce::String& mode)
 {
+    const auto name = canonicalMode(mode);
     for (size_t i = 0; i < MODE_NAMES.size(); ++i) {
-        if (MODE_NAMES[i] == mode) {
+        if (MODE_NAMES[i] == name) {
             return MODES[i];
         }
     }

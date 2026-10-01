@@ -5,10 +5,12 @@
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_dsp/juce_dsp.h>
 #include <atomic>
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 
-#include "ArpeggiatorEngine.h"
+#include "StepSequencer.h"
 
 namespace ChordFoundry {
 
@@ -64,13 +66,16 @@ private:
 
 //==============================================================================
 /**
-    The headless rendering engine: a juce::Synthesiser plus a tiny click-track
-    generator, mixed down through a polyphony-aware gain stage and a soft
-    limiter. This class never touches an audio device - it is a plain
-    juce::AudioSource that can be prepared and rendered directly into an
-    AudioBuffer, which is what makes it possible to unit test without opening
-    real audio hardware. ChordSynthesizer (below) is the only class that wires
-    it up to a real device.
+    The headless rendering engine: a juce::Synthesiser, a click-track generator and the
+    sample-accurate StepSequencer, mixed down through a polyphony-aware gain stage and a soft
+    limiter. This class never touches an audio device - it is a plain juce::AudioSource that
+    can be prepared and rendered directly into an AudioBuffer, which is what makes it possible
+    to unit test without opening real audio hardware. ChordSynthesizer (below) is the only
+    class that wires it up to a real device.
+
+    Threading: every public control method is for the message thread (one caller thread). They
+    never touch the synthesiser; they post a command to a lock-free FIFO that the audio thread
+    drains at the start of each block, so the audio callback never waits on the message thread.
 */
 class ChordSynthAudioSource : public juce::AudioSource
 {
@@ -84,34 +89,69 @@ public:
     void getNextAudioBlock (const juce::AudioSourceChannelInfo& bufferToFill) override;
 
     //==============================================================================
-    // Note-level control. Safe to call from the message thread; juce::Synthesiser
-    // guards its voice list with an internal lock shared with renderNextBlock().
+    // Note-level control (auditioning a chord outside the sequencer).
     void noteOn (int midiNoteNumber, float velocity);
     void noteOff (int midiNoteNumber);
     void allNotesOff();
 
-    // Triggers a short click-track burst (~2 ms). accent selects a higher,
-    // louder blip for downbeats. Safe to call from the message thread; the
-    // request is picked up by the audio thread via an atomic counter.
+    // Triggers a short click-track burst (~2 ms). accent selects a higher, louder blip for
+    // downbeats.
     void playClick (bool accent);
 
     void setMasterGain (float newGain);
+    float getMasterGain() const { return masterGain.load (std::memory_order_relaxed); }
+
+    //==============================================================================
+    // Step sequencer. Step timing is counted in samples inside the audio callback.
+    void setSequencerPattern (const SequencerPattern& pattern)  { sequencer.setPattern (pattern); }
+    void setTempo (float bpm)                                   { sequencer.setTempo (bpm); }
+    void setLoop (bool shouldLoop)                              { sequencer.setLoop (shouldLoop); }
+    void setSequencerClickEnabled (bool enabled)                { sequencer.setClickEnabled (enabled); }
+    void startSequencer();
+    void stopSequencer();
+
+    int getSequencerStep() const                { return sequencer.getCurrentStep(); }
+    bool isSequencerPlaying() const             { return sequencer.isPlaying(); }
+    int getSequencerFinishedCount() const       { return sequencer.getFinishedCount(); }
+
+    // Number of note-ons the audio thread has handed to the synthesiser (diagnostics/tests).
+    int getNoteOnCount() const                  { return noteOnCount.load (std::memory_order_relaxed); }
 
     static constexpr int numVoices = 16;
 
 private:
-    void renderClick (const juce::AudioSourceChannelInfo& bufferToFill);
+    struct Command
+    {
+        enum class Type : std::uint8_t { noteOn, noteOff, allNotesOff, click, startSequencer, stopSequencer };
+
+        Type type = Type::allNotesOff;
+        int note = 0;
+        float velocity = 0.0f;
+        bool accent = false;
+    };
+
+    static constexpr int commandFifoSize = 1024;
+
+    void post (const Command& command);
+    void drainCommands();
+    void apply (const Command& command);
+    void apply (const StepSequencer::Event& event);
+    void renderSegment (juce::AudioBuffer<float>& buffer, int startSample, int numSamples);
+    void startClick (bool accent);
+    void renderClick (juce::AudioBuffer<float>& buffer, int startSample, int numSamples);
     void applyGainAndLimiter (const juce::AudioSourceChannelInfo& bufferToFill);
 
     juce::Synthesiser synth;
+    StepSequencer sequencer;
+    const juce::MidiBuffer noMidi;
     std::atomic<float> masterGain { 0.8f };
+    std::atomic<int> noteOnCount { 0 };
     double currentSampleRate = 44100.0;
 
-    // Click-track state. The atomics are the only fields the message thread
-    // touches; everything else below them is audio-thread-only.
-    std::atomic<int> clickRequestCounter { 0 };
-    std::atomic<bool> clickRequestAccent { false };
-    int lastHandledClickCounter = 0;
+    juce::AbstractFifo commandFifo { commandFifoSize };
+    std::vector<Command> commands = std::vector<Command> (static_cast<size_t> (commandFifoSize));
+
+    // Click-track state (audio thread only).
     int clickLengthSamples = 96; // re-derived from the sample rate in prepareToPlay
     int clickSamplesRemaining = 0;
     double clickPhase = 0.0;
@@ -122,42 +162,48 @@ private:
 
 //==============================================================================
 /**
-    ChordSynthesizer - the audio engine used by MainComponent. Owns the
-    default audio device and drives a ChordSynthAudioSource through it.
+    ChordSynthesizer - the audio engine used by MainComponent. Owns the default audio
+    device and drives a ChordSynthAudioSource through it.
 
-    Frequencies passed to playChord(const std::vector<float>&) are mapped to
-    the nearest MIDI note (no fractional pitch-bend/offset support); use
-    playChord(const std::vector<int>&, velocity) directly when exact MIDI
-    notes are already known.
+    Frequencies passed to playChord(const std::vector<float>&) are mapped to the nearest MIDI
+    note (no fractional pitch-bend/offset support); use playChord(const std::vector<int>&,
+    velocity) directly when exact MIDI notes are already known.
 */
-class ChordSynthesizer
+class ChordSynthesizer : private juce::ChangeListener
 {
 public:
     ChordSynthesizer();
-    ~ChordSynthesizer();
+    ~ChordSynthesizer() override;
 
-    // Opens the default audio device (initialiseWithDefaultDevices(0, 2), 0 in /
-    // 2 out) the first time it's called, then attaches the audio callback.
-    // stop() detaches the callback but leaves the device open, so start() can
-    // be called again cheaply.
-    void start();
+    // Opens the default audio output device (0 in / 2 out) and attaches the audio callback.
+    // Returns true when a usable output device is open. When it is not, getDeviceProblem()
+    // says why in words a user can act on. Calling start() again retries a device that failed
+    // to open. stop() detaches the callback but leaves the device open.
+    bool start();
     void stop();
     bool isRunning() const { return running; }
 
-    // Plays a chord as sustained notes (replaces whatever chord is currently
-    // sounding). Frequencies are converted to the nearest MIDI note.
+    // True when an output device with at least one output channel is open.
+    bool hasAudioDevice() const;
+
+    // Empty when the output device is fine; otherwise a short explanation for the user.
+    juce::String getDeviceProblem() const;
+
+    // Builds the explanation from the error text AudioDeviceManager returned and the state of
+    // the device afterwards. Separate and static so it can be tested without hardware.
+    static juce::String describeDeviceProblem (const juce::String& initialiseError,
+                                               bool deviceOpen, bool hasOutputChannels);
+
+    // For the audio settings dialog.
+    juce::AudioDeviceManager& getDeviceManager() { return deviceManager; }
+
+    // Called on the message thread whenever the audio device configuration changes.
+    std::function<void()> onDeviceStateChanged;
+
+    // Plays a chord as sustained notes (replaces whatever chord is currently sounding).
+    // Frequencies are converted to the nearest MIDI note.
     void playChord (const std::vector<float>& frequencies);
     void playChord (const std::vector<int>& midiNotes, float velocity = 0.8f);
-
-    // Plays `frequencies` as an arpeggio: notes are reordered by arpMode
-    // (see ArpeggiatorEngine) and stepped through one at a time, each held
-    // for the note length implied by arpLength at tempoBpm, looping until
-    // stopAllNotes() or another play call replaces it.
-    void playArpeggiatedChord (const std::vector<float>& frequencies,
-                                const juce::String& arpMode,
-                                const juce::String& arpLength,
-                                float tempoBpm,
-                                float velocity = 0.8f);
 
     void stopAllNotes();
 
@@ -166,18 +212,27 @@ public:
 
     void setMasterGain (float newGain);
 
+    // Sequenced playback: the pattern is counted out in samples on the audio thread.
+    void setSequencerPattern (const SequencerPattern& pattern)  { audioSource.setSequencerPattern (pattern); }
+    void setTempo (float bpm)                                   { audioSource.setTempo (bpm); }
+    void setLoop (bool shouldLoop)                              { audioSource.setLoop (shouldLoop); }
+    void setSequencerClickEnabled (bool enabled)                { audioSource.setSequencerClickEnabled (enabled); }
+    void startSequencer()                                       { audioSource.startSequencer(); }
+    void stopSequencer();
+    int getSequencerStep() const                                { return audioSource.getSequencerStep(); }
+    int getSequencerFinishedCount() const                       { return audioSource.getSequencerFinishedCount(); }
+
     // Maps a frequency in Hz to the nearest MIDI note number (0-127, clamped).
     static int frequencyToNearestMidiNote (float frequencyHz);
 
 private:
-    class ArpeggiatorTimer;
+    void changeListenerCallback (juce::ChangeBroadcaster*) override;
 
     juce::AudioDeviceManager deviceManager;
     juce::AudioSourcePlayer audioSourcePlayer;
     ChordSynthAudioSource audioSource;
-    ArpeggiatorEngine arpeggiatorEngine;
-    std::unique_ptr<ArpeggiatorTimer> arpeggiatorTimer;
 
+    juce::String lastInitialiseError;
     bool deviceInitialised = false;
     bool running = false;
 

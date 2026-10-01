@@ -68,6 +68,11 @@ struct BlockData {
     juce::Colour displayColor;
     ChordData modifierOverrides;  // Optional per-block chord modifications
     bool hasModifierOverrides = false;
+
+    // Sequenced playback sustains a chord across consecutive steps. Set this to strike
+    // the chord again at the start of this block even when the step before it held the
+    // same chord.
+    bool newStrike = false;
     
     BlockData() = default;
     
@@ -80,7 +85,8 @@ struct BlockData {
                lengthSteps == other.lengthSteps &&
                displayColor == other.displayColor &&
                modifierOverrides == other.modifierOverrides &&
-               hasModifierOverrides == other.hasModifierOverrides;
+               hasModifierOverrides == other.hasModifierOverrides &&
+               newStrike == other.newStrike;
     }
     
     bool overlaps(const BlockData& other) const {
@@ -143,6 +149,9 @@ public:
     // Pattern block management
     void addBlock(const BlockData& block);
     void removeBlock(int blockIndex);
+    // Replaces the block at blockIndex (for example to change its modifiers or strike flag).
+    // Ignored if the new block would be invalid or overlap another block of the same chord.
+    void replaceBlock(int blockIndex, const BlockData& newBlock);
     void clearBlocks();
     void randomizeBlocks(int minBlocks, int maxBlocks);
     

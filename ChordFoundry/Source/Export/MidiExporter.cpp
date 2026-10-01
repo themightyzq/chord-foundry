@@ -43,7 +43,7 @@ bool MidiExporter::exportToFile(const juce::File& outputFile,
     // Process each block
     for (const auto& block : blocks)
     {
-        if (block.chordIndex < 0 || block.chordIndex >= chords.size())
+        if (block.chordIndex < 0 || block.chordIndex >= static_cast<int>(chords.size()))
             continue;
             
         // Get the chord data

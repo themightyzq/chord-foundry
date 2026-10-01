@@ -97,6 +97,8 @@ private:
     //==============================================================================
     void setupUI();
     void updateChordButtons();
+    int getHeaderHeight() const;
+    juce::Rectangle<int> getAnalysisBounds() const;
     void updateChordButtonLayout();
     void updateProgressionAnalysis();
     

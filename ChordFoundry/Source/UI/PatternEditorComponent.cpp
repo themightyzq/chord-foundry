@@ -10,6 +10,9 @@ PatternEditorComponent::StepButton::StepButton(int stepNumber)
     setAccessible(true);
     setTitle("Step " + juce::String(stepNumber + 1));
     setDescription("Pattern step " + juce::String(stepNumber + 1) + " of 32");
+    setTooltip("Step " + juce::String(stepNumber + 1) + ". Click to add or remove a block of the selected chord. "
+               "Shift-click the first step of a block to make it strike its chord again "
+               "instead of sustaining the one before.");
 }
 
 void PatternEditorComponent::StepButton::paintButton(juce::Graphics& g, 
@@ -56,6 +59,17 @@ void PatternEditorComponent::StepButton::paintButton(juce::Graphics& g,
         g.fillEllipse(centerBounds);
     }
     
+    // Mark the steps that re-strike their chord with a small triangle in the top-left corner
+    if (isStrike)
+    {
+        juce::Path marker;
+        marker.addTriangle(bounds.getX() + 1.0f, bounds.getY() + 1.0f,
+                           bounds.getX() + 11.0f, bounds.getY() + 1.0f,
+                           bounds.getX() + 1.0f, bounds.getY() + 11.0f);
+        g.setColour(ModernLookAndFeel::Colors::textOnPrimary);
+        g.fillPath(marker);
+    }
+    
     // Draw step number for every 4th step
     if ((stepNumber % 4) == 0)
     {
@@ -88,8 +102,8 @@ void PatternEditorComponent::paint(juce::Graphics& g)
     
     // Draw grid background
     auto gridArea = getLocalBounds().reduced(ModernLookAndFeel::Metrics::spacingMD);
-    gridArea.removeFromTop(60); // Header
-    gridArea.removeFromBottom(60); // Buttons
+    gridArea.removeFromTop(getHeaderHeight()); // Header
+    gridArea.removeFromBottom(getButtonAreaHeight()); // Buttons
     
     // Draw step numbers and beat indicators
     drawStepNumbers(g, gridArea);
@@ -99,22 +113,6 @@ void PatternEditorComponent::paint(juce::Graphics& g)
     {
         drawPlayhead(g, gridArea);
     }
-    
-    // Show helpful message if no blocks
-    if (blocks.empty())
-    {
-        auto textArea = gridArea.reduced(ModernLookAndFeel::Metrics::spacingLG);
-        
-        g.setColour(ModernLookAndFeel::Colors::textSecondary);
-        g.setFont(ModernLookAndFeel::Typography::getBodyFont());
-        
-        juce::String helpText = "Click and drag to create pattern blocks\\n\\n";
-        helpText += "• Each block represents when a chord plays\\n";
-        helpText += "• Drag to adjust block length\\n"; 
-        helpText += "• Right-click to remove blocks";
-        
-        g.drawText(helpText, textArea, juce::Justification::centred);
-    }
 }
 
 void PatternEditorComponent::resized()
@@ -122,12 +120,13 @@ void PatternEditorComponent::resized()
     auto bounds = getLocalBounds().reduced(ModernLookAndFeel::Metrics::spacingMD);
     
     // Header area
-    auto headerBounds = bounds.removeFromTop(60);
+    auto headerBounds = bounds.removeFromTop(getHeaderHeight());
     if (headerLabel)
         headerLabel->setBounds(headerBounds);
     
     // Button area at bottom
-    auto buttonArea = bounds.removeFromBottom(ModernLookAndFeel::Metrics::buttonHeight + ModernLookAndFeel::Metrics::spacingMD);
+    auto buttonArea = bounds.removeFromBottom(getButtonAreaHeight());
+    buttonArea.removeFromTop(ModernLookAndFeel::Metrics::spacingSM);
     auto buttonWidth = (buttonArea.getWidth() - ModernLookAndFeel::Metrics::spacingSM) / 2;
     
     if (clearButton)
@@ -160,6 +159,16 @@ void PatternEditorComponent::resized()
     }
 }
 
+int PatternEditorComponent::getHeaderHeight() const
+{
+    return getHeight() < 300 ? 36 : 60;
+}
+
+int PatternEditorComponent::getButtonAreaHeight() const
+{
+    return ModernLookAndFeel::Metrics::buttonHeight + ModernLookAndFeel::Metrics::spacingSM;
+}
+
 //==============================================================================
 void PatternEditorComponent::buttonClicked(juce::Button* button)
 {
@@ -169,6 +178,23 @@ void PatternEditorComponent::buttonClicked(juce::Button* button)
         if (stepButtons[i].get() == button)
         {
             int stepNum = static_cast<int>(i);
+
+            // Shift-click on the first step of a block: toggle "strike again" for that block
+            if (juce::ModifierKeys::currentModifiers.isShiftDown())
+            {
+                const int index = findBlockIndexAtStep(stepNum);
+                if (index >= 0 && blocks[static_cast<size_t>(index)].startStep == stepNum)
+                {
+                    auto changed = blocks[static_cast<size_t>(index)];
+                    changed.newStrike = !changed.newStrike;
+                    blocks[static_cast<size_t>(index)] = changed;
+                    updateStepButtons();
+
+                    if (onBlockModified)
+                        onBlockModified(index, changed);
+                }
+                return;
+            }
             
             // Toggle block at this step
             if (findBlockAtStep(stepNum))
@@ -294,6 +320,19 @@ void PatternEditorComponent::setCurrentStep(int step)
     }
 }
 
+void PatternEditorComponent::setSelectedChordIndex(int index)
+{
+    selectedChordIndex = juce::jmax(0, chordCount > 0 ? juce::jmin(index, chordCount - 1) : index);
+}
+
+void PatternEditorComponent::setChordCount(int count)
+{
+    chordCount = juce::jmax(0, count);
+
+    if (chordCount > 0 && selectedChordIndex >= chordCount)
+        selectedChordIndex = chordCount - 1;
+}
+
 void PatternEditorComponent::clearPattern()
 {
     blocks.clear();
@@ -345,6 +384,7 @@ void PatternEditorComponent::setupUI()
     clearButton->setColour(juce::TextButton::buttonOnColourId, ModernLookAndFeel::Colors::error);
     clearButton->setAccessible(true);
     clearButton->setTitle("Clear all pattern blocks");
+    clearButton->setTooltip("Remove every block from the pattern");
     addAndMakeVisible(*clearButton);
     
     // Randomize button
@@ -353,6 +393,7 @@ void PatternEditorComponent::setupUI()
     randomizeButton->setColour(juce::TextButton::buttonOnColourId, ModernLookAndFeel::Colors::secondary);
     randomizeButton->setAccessible(true);
     randomizeButton->setTitle("Generate random pattern");
+    randomizeButton->setTooltip("Fill the pattern with random blocks of the chords in the progression");
     addAndMakeVisible(*randomizeButton);
 }
 
@@ -378,6 +419,7 @@ void PatternEditorComponent::updateStepButtons()
     for (auto& stepButton : stepButtons)
     {
         stepButton->setHasBlock(false);
+        stepButton->setIsStrike(false);
     }
     
     // Set blocks on appropriate steps
@@ -392,6 +434,9 @@ void PatternEditorComponent::updateStepButtons()
                 stepButtons[static_cast<size_t>(step)]->setHasBlock(true, blockColour);
             }
         }
+
+        if (block.newStrike && block.startStep >= 0 && block.startStep < static_cast<int>(stepButtons.size()))
+            stepButtons[static_cast<size_t>(block.startStep)]->setIsStrike(true);
     }
 }
 
@@ -490,7 +535,7 @@ void PatternEditorComponent::drawStepNumbers(juce::Graphics& g, const juce::Rect
 
 void PatternEditorComponent::drawPlayhead(juce::Graphics& g, const juce::Rectangle<int>& area)
 {
-    juce::ignoreUnused(area);
+    juce::ignoreUnused(g, area);
     
     // Playhead is drawn by individual step buttons
     // Could add a global playhead line here if needed

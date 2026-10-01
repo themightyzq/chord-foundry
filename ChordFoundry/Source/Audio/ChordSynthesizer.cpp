@@ -96,6 +96,7 @@ void ChordSynthAudioSource::prepareToPlay(int samplesPerBlockExpected, double sa
 
     currentSampleRate = sampleRate > 0.0 ? sampleRate : 44100.0;
     synth.setCurrentPlaybackSampleRate(currentSampleRate);
+    sequencer.prepare(currentSampleRate);
 
     clickLengthSamples = juce::jmax(1, static_cast<int>(std::round(0.002 * currentSampleRate)));
     clickSamplesRemaining = 0;
@@ -107,31 +108,136 @@ void ChordSynthAudioSource::releaseResources()
     clickSamplesRemaining = 0;
 }
 
+void ChordSynthAudioSource::post(const Command& command)
+{
+    int start1 = 0, size1 = 0, start2 = 0, size2 = 0;
+    commandFifo.prepareToWrite(1, start1, size1, start2, size2);
+
+    if (size1 + size2 < 1)
+        return; // full: nothing is draining it (no device); dropping is safe
+
+    commands[static_cast<size_t>(size1 > 0 ? start1 : start2)] = command;
+    commandFifo.finishedWrite(1);
+}
+
+void ChordSynthAudioSource::drainCommands()
+{
+    const int ready = commandFifo.getNumReady();
+    if (ready == 0)
+        return;
+
+    int start1 = 0, size1 = 0, start2 = 0, size2 = 0;
+    commandFifo.prepareToRead(ready, start1, size1, start2, size2);
+
+    for (int i = 0; i < size1; ++i)
+        apply(commands[static_cast<size_t>(start1 + i)]);
+    for (int i = 0; i < size2; ++i)
+        apply(commands[static_cast<size_t>(start2 + i)]);
+
+    commandFifo.finishedRead(size1 + size2);
+}
+
+void ChordSynthAudioSource::apply(const Command& command)
+{
+    switch (command.type)
+    {
+        case Command::Type::noteOn:
+            synth.noteOn(1, command.note, command.velocity);
+            noteOnCount.fetch_add(1, std::memory_order_relaxed);
+            break;
+        case Command::Type::noteOff:
+            synth.noteOff(1, command.note, 1.0f, true);
+            break;
+        case Command::Type::allNotesOff:
+            synth.allNotesOff(0, true);
+            break;
+        case Command::Type::click:
+            startClick(command.accent);
+            break;
+        case Command::Type::startSequencer:
+            sequencer.startNow();
+            break;
+        case Command::Type::stopSequencer:
+            sequencer.stopNow();
+            synth.allNotesOff(0, true);
+            break;
+    }
+}
+
+void ChordSynthAudioSource::apply(const StepSequencer::Event& event)
+{
+    switch (event.type)
+    {
+        case StepSequencer::Event::Type::noteOn:
+            synth.noteOn(1, event.note, event.velocity);
+            noteOnCount.fetch_add(1, std::memory_order_relaxed);
+            break;
+        case StepSequencer::Event::Type::noteOff:
+            synth.noteOff(1, event.note, 1.0f, true);
+            break;
+        case StepSequencer::Event::Type::click:
+            startClick(event.accent);
+            break;
+        case StepSequencer::Event::Type::stepStarted:
+        case StepSequencer::Event::Type::finished:
+            break;
+    }
+}
+
 void ChordSynthAudioSource::getNextAudioBlock(const juce::AudioSourceChannelInfo& bufferToFill)
 {
+    juce::ScopedNoDenormals noDenormals;
+
     bufferToFill.clearActiveBufferRegion();
 
     if (bufferToFill.buffer == nullptr)
         return;
 
-    const juce::MidiBuffer noMidi;
-    synth.renderNextBlock(*bufferToFill.buffer, noMidi, bufferToFill.startSample, bufferToFill.numSamples);
+    drainCommands();
 
-    renderClick(bufferToFill);
+    // The sequencer works out where steps fall inside this block, in samples. Render up to each
+    // event, apply it, and carry on, so notes start on the exact sample.
+    int done = 0;
+    while (done < bufferToFill.numSamples)
+    {
+        const int consumed = sequencer.process(bufferToFill.numSamples - done);
+        const auto* events = sequencer.getEvents();
+        const int numEvents = sequencer.getNumEvents();
+
+        int cursor = 0;
+        for (int i = 0; i < numEvents; ++i)
+        {
+            const int offset = juce::jlimit(cursor, juce::jmax(cursor, consumed), events[i].sampleOffset);
+            renderSegment(*bufferToFill.buffer, bufferToFill.startSample + done + cursor, offset - cursor);
+            cursor = offset;
+            apply(events[i]);
+        }
+
+        renderSegment(*bufferToFill.buffer, bufferToFill.startSample + done + cursor, consumed - cursor);
+        done += consumed;
+    }
+
     applyGainAndLimiter(bufferToFill);
 }
 
-void ChordSynthAudioSource::renderClick(const juce::AudioSourceChannelInfo& bufferToFill)
+void ChordSynthAudioSource::renderSegment(juce::AudioBuffer<float>& buffer, int startSample, int numSamples)
 {
-    const int requested = clickRequestCounter.load(std::memory_order_acquire);
-    if (requested != lastHandledClickCounter)
-    {
-        lastHandledClickCounter = requested;
-        clickSamplesRemaining = clickLengthSamples;
-        clickPhase = 0.0;
-        clickIsAccent = clickRequestAccent.load(std::memory_order_acquire);
-    }
+    if (numSamples <= 0)
+        return;
 
+    synth.renderNextBlock(buffer, noMidi, startSample, numSamples);
+    renderClick(buffer, startSample, numSamples);
+}
+
+void ChordSynthAudioSource::startClick(bool accent)
+{
+    clickSamplesRemaining = clickLengthSamples;
+    clickPhase = 0.0;
+    clickIsAccent = accent;
+}
+
+void ChordSynthAudioSource::renderClick(juce::AudioBuffer<float>& buffer, int startSample, int numSamples)
+{
     if (clickSamplesRemaining <= 0)
         return;
 
@@ -139,7 +245,7 @@ void ChordSynthAudioSource::renderClick(const juce::AudioSourceChannelInfo& buff
     const double phaseIncrement = juce::MathConstants<double>::twoPi * frequencyHz / currentSampleRate;
     const float amplitude = clickIsAccent ? 0.5f : 0.35f;
 
-    const int samplesToRender = juce::jmin(clickSamplesRemaining, bufferToFill.numSamples);
+    const int samplesToRender = juce::jmin(clickSamplesRemaining, numSamples);
 
     for (int i = 0; i < samplesToRender; ++i)
     {
@@ -149,8 +255,8 @@ void ChordSynthAudioSource::renderClick(const juce::AudioSourceChannelInfo& buff
         const float sample = amplitude * envelope * static_cast<float>(std::sin(clickPhase));
         clickPhase += phaseIncrement;
 
-        for (int ch = 0; ch < bufferToFill.buffer->getNumChannels(); ++ch)
-            bufferToFill.buffer->addSample(ch, bufferToFill.startSample + i, sample);
+        for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+            buffer.addSample(ch, startSample + i, sample);
 
         --clickSamplesRemaining;
     }
@@ -181,23 +287,48 @@ void ChordSynthAudioSource::applyGainAndLimiter(const juce::AudioSourceChannelIn
 
 void ChordSynthAudioSource::noteOn(int midiNoteNumber, float velocity)
 {
-    synth.noteOn(1, midiNoteNumber, velocity);
+    Command c;
+    c.type = Command::Type::noteOn;
+    c.note = midiNoteNumber;
+    c.velocity = velocity;
+    post(c);
 }
 
 void ChordSynthAudioSource::noteOff(int midiNoteNumber)
 {
-    synth.noteOff(1, midiNoteNumber, 1.0f, true);
+    Command c;
+    c.type = Command::Type::noteOff;
+    c.note = midiNoteNumber;
+    post(c);
 }
 
 void ChordSynthAudioSource::allNotesOff()
 {
-    synth.allNotesOff(0, true);
+    Command c;
+    c.type = Command::Type::allNotesOff;
+    post(c);
 }
 
 void ChordSynthAudioSource::playClick(bool accent)
 {
-    clickRequestAccent.store(accent, std::memory_order_release);
-    clickRequestCounter.fetch_add(1, std::memory_order_release);
+    Command c;
+    c.type = Command::Type::click;
+    c.accent = accent;
+    post(c);
+}
+
+void ChordSynthAudioSource::startSequencer()
+{
+    Command c;
+    c.type = Command::Type::startSequencer;
+    post(c);
+}
+
+void ChordSynthAudioSource::stopSequencer()
+{
+    Command c;
+    c.type = Command::Type::stopSequencer;
+    post(c);
 }
 
 void ChordSynthAudioSource::setMasterGain(float newGain)
@@ -206,113 +337,39 @@ void ChordSynthAudioSource::setMasterGain(float newGain)
 }
 
 //==============================================================================
-// ChordSynthesizer::ArpeggiatorTimer
-//==============================================================================
-// Steps through a pre-computed note sequence on the message thread, one note
-// per timer tick, driving the audio source's noteOn/noteOff. Loops until
-// stop() is called (from stopAllNotes()) or begin() is called again with a
-// new sequence.
-class ChordSynthesizer::ArpeggiatorTimer : public juce::Timer
-{
-public:
-    explicit ArpeggiatorTimer(ChordSynthAudioSource& sourceToUse) : audioSource(sourceToUse) {}
-
-    ~ArpeggiatorTimer() override { stop(); }
-
-    void begin(std::vector<float> sequenceToPlay, double secondsPerNote, float velocityToUse)
-    {
-        stopTimer();
-        turnOffCurrentNote();
-
-        sequence = std::move(sequenceToPlay);
-        velocity = velocityToUse;
-        index = 0;
-
-        if (sequence.empty())
-            return;
-
-        playNextNote();
-
-        const int intervalMs = juce::jmax(1, static_cast<int>(std::round(secondsPerNote * 1000.0)));
-        startTimer(intervalMs);
-    }
-
-    void stop()
-    {
-        stopTimer();
-        turnOffCurrentNote();
-        sequence.clear();
-    }
-
-    void timerCallback() override
-    {
-        playNextNote();
-    }
-
-private:
-    void playNextNote()
-    {
-        turnOffCurrentNote();
-
-        if (sequence.empty())
-        {
-            stopTimer();
-            return;
-        }
-
-        const float frequency = sequence[static_cast<size_t>(index)];
-        currentMidiNote = ChordSynthesizer::frequencyToNearestMidiNote(frequency);
-        audioSource.noteOn(currentMidiNote, velocity);
-
-        index = (index + 1) % static_cast<int>(sequence.size());
-    }
-
-    void turnOffCurrentNote()
-    {
-        if (currentMidiNote >= 0)
-        {
-            audioSource.noteOff(currentMidiNote);
-            currentMidiNote = -1;
-        }
-    }
-
-    ChordSynthAudioSource& audioSource;
-    std::vector<float> sequence;
-    float velocity = 0.8f;
-    int index = 0;
-    int currentMidiNote = -1;
-};
-
-//==============================================================================
 // ChordSynthesizer
 //==============================================================================
 ChordSynthesizer::ChordSynthesizer()
 {
-    arpeggiatorTimer = std::make_unique<ArpeggiatorTimer>(audioSource);
+    deviceManager.addChangeListener(this);
 }
 
 ChordSynthesizer::~ChordSynthesizer()
 {
-    arpeggiatorTimer->stop();
+    deviceManager.removeChangeListener(this);
     stop();
 }
 
-void ChordSynthesizer::start()
+bool ChordSynthesizer::start()
 {
-    if (running)
-        return;
-
-    if (!deviceInitialised)
+    if (!deviceInitialised || !hasAudioDevice())
     {
-        const auto error = deviceManager.initialiseWithDefaultDevices(0, 2);
-        if (error.isNotEmpty())
-            juce::Logger::writeToLog("ChordSynthesizer::start: could not open the default audio output: " + error);
-        deviceInitialised = true; // stays silent without a device; the log line says why
+        // First call, or a retry after the device failed to open or went away.
+        lastInitialiseError = deviceManager.initialiseWithDefaultDevices(0, 2);
+        deviceInitialised = true;
+
+        if (lastInitialiseError.isNotEmpty())
+            juce::Logger::writeToLog("ChordSynthesizer::start: could not open the default audio output: " + lastInitialiseError);
     }
 
-    audioSourcePlayer.setSource(&audioSource);
-    deviceManager.addAudioCallback(&audioSourcePlayer);
-    running = true;
+    if (!running)
+    {
+        audioSourcePlayer.setSource(&audioSource);
+        deviceManager.addAudioCallback(&audioSourcePlayer);
+        running = true;
+    }
+
+    return hasAudioDevice();
 }
 
 void ChordSynthesizer::stop()
@@ -323,6 +380,46 @@ void ChordSynthesizer::stop()
     deviceManager.removeAudioCallback(&audioSourcePlayer);
     audioSourcePlayer.setSource(nullptr);
     running = false;
+}
+
+bool ChordSynthesizer::hasAudioDevice() const
+{
+    if (auto* device = deviceManager.getCurrentAudioDevice())
+        return !device->getActiveOutputChannels().isZero();
+
+    return false;
+}
+
+juce::String ChordSynthesizer::getDeviceProblem() const
+{
+    auto* device = deviceManager.getCurrentAudioDevice();
+    const bool hasOutputs = device != nullptr && !device->getActiveOutputChannels().isZero();
+    return describeDeviceProblem(lastInitialiseError, device != nullptr, hasOutputs);
+}
+
+juce::String ChordSynthesizer::describeDeviceProblem(const juce::String& initialiseError,
+                                                      bool deviceOpen, bool hasOutputChannels)
+{
+    if (deviceOpen && hasOutputChannels)
+        return {};
+
+    juce::String text = "Chord Foundry could not open an audio output device, so you will hear nothing.";
+
+    if (deviceOpen)
+        text += " The selected device has no output channels.";
+    else if (initialiseError.isNotEmpty())
+        text += " The system reported: " + initialiseError.trim();
+    else
+        text += " No output device is available.";
+
+    text += "\n\nChoose another output in Audio Settings, or check that your speakers or interface are connected and not in use by another app.";
+    return text;
+}
+
+void ChordSynthesizer::changeListenerCallback(juce::ChangeBroadcaster*)
+{
+    if (onDeviceStateChanged)
+        onDeviceStateChanged();
 }
 
 void ChordSynthesizer::playChord(const std::vector<float>& frequencies)
@@ -337,33 +434,19 @@ void ChordSynthesizer::playChord(const std::vector<float>& frequencies)
 
 void ChordSynthesizer::playChord(const std::vector<int>& midiNotes, float velocity)
 {
-    arpeggiatorTimer->stop();
     audioSource.allNotesOff();
 
     for (const auto note : midiNotes)
         audioSource.noteOn(note, velocity);
 }
 
-void ChordSynthesizer::playArpeggiatedChord(const std::vector<float>& frequencies,
-                                             const juce::String& arpMode,
-                                             const juce::String& arpLength,
-                                             float tempoBpm,
-                                             float velocity)
+void ChordSynthesizer::stopSequencer()
 {
-    if (frequencies.empty())
-        return;
-
-    audioSource.allNotesOff();
-
-    auto sequence = arpeggiatorEngine.getArpeggioSequence(frequencies, arpMode);
-    const double noteLengthSeconds = arpeggiatorEngine.getNoteLength(arpLength, tempoBpm);
-
-    arpeggiatorTimer->begin(std::move(sequence), noteLengthSeconds, velocity);
+    audioSource.stopSequencer();
 }
 
 void ChordSynthesizer::stopAllNotes()
 {
-    arpeggiatorTimer->stop();
     audioSource.allNotesOff();
 }
 

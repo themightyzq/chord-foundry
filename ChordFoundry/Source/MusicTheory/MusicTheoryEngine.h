@@ -8,6 +8,10 @@
 
 namespace ChordFoundry {
 
+// "vii" followed by the degree sign. A plain "vii°" literal is read by juce::String as
+// Latin-1 and shows up as "viiÂ°"; this builds it from UTF-8 bytes.
+inline juce::String diminishedRoman() { return juce::String::fromUTF8("vii\xC2\xB0"); }
+
 class MusicTheoryEngine {
 public:
     // Core music theory data - matches Python implementation exactly
@@ -65,6 +69,11 @@ public:
         const std::vector<int>& baseChord,
         const CustomVoicingData& voicingData
     );
+    
+    // The settings panel offers "C#/Db" and "Major (Ionian)"; the tables are keyed "C#" and
+    // "Major". These map a menu label to the table name (names without a suffix pass through).
+    static juce::String canonicalKey(const juce::String& key);
+    static juce::String canonicalMode(const juce::String& mode);
     
     // Validation functions
     static bool isValidKey(const juce::String& key);

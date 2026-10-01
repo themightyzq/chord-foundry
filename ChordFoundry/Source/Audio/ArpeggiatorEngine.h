@@ -26,6 +26,14 @@ public:
     // divisions default to "1/16". tempo is beats (quarter notes) per minute.
     double getNoteLength(const juce::String& arpLength, float tempo);
 
+    // Length of one arp note in quarter-note beats (1/16 = 0.25 ... 1/2 = 2.0);
+    // unrecognised divisions default to 1/16.
+    static double getNoteLengthBeats(const juce::String& arpLength);
+
+    // The same length in sequencer steps (16th notes): 1, 2, 4 or 8. The step
+    // scheduler uses this so arp notes land exactly on step boundaries.
+    static int getNoteLengthSteps(const juce::String& arpLength);
+
 private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ArpeggiatorEngine)
 };

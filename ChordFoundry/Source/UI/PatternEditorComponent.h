@@ -46,6 +46,11 @@ public:
     void setBlocks(const std::vector<BlockData>& blocks);
     const std::vector<BlockData>& getAllBlocks() const { return blocks; }
     void setCurrentStep(int step);
+
+    // Blocks drawn on the grid use this chord. The chord count keeps the index in range.
+    void setSelectedChordIndex(int index);
+    void setChordCount(int count);
+    int getSelectedChordIndex() const { return selectedChordIndex; }
     void clearPattern();
     void randomizePattern(int minBlocks = 2, int maxBlocks = 6);
     
@@ -67,6 +72,7 @@ private:
                         bool shouldDrawButtonAsDown) override;
         
         void setIsCurrentStep(bool isCurrent) { isCurrentStep = isCurrent; repaint(); }
+        void setIsStrike(bool strike) { if (isStrike != strike) { isStrike = strike; repaint(); } }
         void setHasBlock(bool hasBlock, const juce::Colour& blockColour = juce::Colours::blue) 
         { 
             this->hasBlock = hasBlock; 
@@ -79,6 +85,7 @@ private:
     private:
         int stepNumber;
         bool isCurrentStep = false;
+        bool isStrike = false;   // first step of a block flagged to re-strike its chord
         bool hasBlock = false;
         juce::Colour blockColour = ModernLookAndFeel::Colors::primary;
         
@@ -113,6 +120,8 @@ private:
     void setupUI();
     void setupStepButtons();
     void updateStepButtons();
+    int getHeaderHeight() const;
+    int getButtonAreaHeight() const;
     void updatePlayheadPosition();
     
     // Block management

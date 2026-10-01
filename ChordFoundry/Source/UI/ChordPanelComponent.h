@@ -16,6 +16,7 @@ namespace ChordFoundry {
  * - Accessibility labels and descriptions
  */
 class ChordPanelComponent : public juce::Component,
+                           public juce::SettableTooltipClient,
                            public juce::Button::Listener
 {
 public:
@@ -72,6 +73,12 @@ private:
     void setupChordData();
     void setupUI();
     void updateChordSelection();
+
+    // Where the wheel is drawn: as large as fits between the header and the buttons (up to
+    // WHEEL_SIZE), so a short panel gets a smaller wheel instead of one that overlaps them.
+    juce::Rectangle<int> getWheelBounds() const;
+    int getHeaderHeight() const;
+    float getWheelScale() const;
     
     // Pie slice methods
     void drawPieSlice(juce::Graphics& g, int sliceIndex, float startAngle, float endAngle,

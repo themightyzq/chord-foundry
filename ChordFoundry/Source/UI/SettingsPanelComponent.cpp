@@ -5,6 +5,12 @@ namespace ChordFoundry {
 //==============================================================================
 SettingsPanelComponent::SettingsPanelComponent()
 {
+    viewport.setViewedComponent(&content, false);
+    viewport.setScrollBarsShown(true, false);
+    viewport.setScrollBarThickness(12);
+    viewport.setTitle("Settings sections");
+    addAndMakeVisible(viewport);
+
     setupUI();
     
     // Set accessibility properties
@@ -22,95 +28,91 @@ void SettingsPanelComponent::paint(juce::Graphics& g)
 
 void SettingsPanelComponent::resized()
 {
-    auto bounds = getLocalBounds().reduced(ModernLookAndFeel::Metrics::spacingMD);
-    
-    // Playback section
-    auto playbackBounds = createSection(bounds, "Playback", 120);
-    
-    if (playbackLabel)
-        playbackLabel->setBounds(playbackBounds.removeFromTop(24));
-    
-    playbackBounds.removeFromTop(ModernLookAndFeel::Metrics::spacingSM);
-    
-    auto buttonHeight = ModernLookAndFeel::Metrics::buttonHeight;
-    auto buttonRow1 = playbackBounds.removeFromTop(buttonHeight);
-    auto buttonWidth = (buttonRow1.getWidth() - ModernLookAndFeel::Metrics::spacingSM) / 2;
-    
-    if (playButton)
-        playButton->setBounds(buttonRow1.removeFromLeft(buttonWidth));
-    buttonRow1.removeFromLeft(ModernLookAndFeel::Metrics::spacingSM);
-    if (stopButton)
-        stopButton->setBounds(buttonRow1);
-    
-    playbackBounds.removeFromTop(ModernLookAndFeel::Metrics::spacingSM);
-    if (loopButton)
-        loopButton->setBounds(playbackBounds.removeFromTop(28));
-    
-    // Tempo section
-    auto tempoBounds = createSection(bounds, "Tempo", 80);
-    
-    if (tempoLabel)
-        tempoLabel->setBounds(tempoBounds.removeFromTop(24));
-    
-    tempoBounds.removeFromTop(ModernLookAndFeel::Metrics::spacingSM);
-    
-    if (tempoSlider)
-        tempoSlider->setBounds(tempoBounds.removeFromTop(24));
-    
-    if (tempoValueLabel)
-        tempoValueLabel->setBounds(tempoBounds.removeFromTop(20));
-    
-    // Musical settings section
-    auto musicalBounds = createSection(bounds, "Musical Settings", 100);
-    
-    if (musicalLabel)
-        musicalLabel->setBounds(musicalBounds.removeFromTop(24));
-    
-    musicalBounds.removeFromTop(ModernLookAndFeel::Metrics::spacingSM);
-    
-    if (keyLabel)
-        keyLabel->setBounds(musicalBounds.removeFromTop(20));
-    if (keyComboBox)
-        keyComboBox->setBounds(musicalBounds.removeFromTop(28));
-    
-    musicalBounds.removeFromTop(ModernLookAndFeel::Metrics::spacingSM);
-    
-    if (modeLabel)
-        modeLabel->setBounds(musicalBounds.removeFromTop(20));
-    if (modeComboBox)
-        modeComboBox->setBounds(musicalBounds.removeFromTop(28));
-    
-    // Audio settings section
-    auto audioBounds = createSection(bounds, "Audio Settings", 100);
-    
-    if (audioLabel)
-        audioLabel->setBounds(audioBounds.removeFromTop(24));
-    
-    audioBounds.removeFromTop(ModernLookAndFeel::Metrics::spacingSM);
-    
-    if (clickTrackButton)
-        clickTrackButton->setBounds(audioBounds.removeFromTop(28));
-    
-    audioBounds.removeFromTop(ModernLookAndFeel::Metrics::spacingSM);
-    
-    if (volumeLabel)
-        volumeLabel->setBounds(audioBounds.removeFromTop(20));
-    if (volumeSlider)
-        volumeSlider->setBounds(audioBounds.removeFromTop(24));
-    
-    // Keyboard shortcuts section (remaining space)
-    if (bounds.getHeight() > 60)
+    viewport.setBounds(getLocalBounds().reduced(ModernLookAndFeel::Metrics::spacingMD, ModernLookAndFeel::Metrics::spacingSM));
+
+    // Lay out at the full width; if that is taller than the viewport a scroll bar will take
+    // some width, so lay out again at the narrower width.
+    int width = viewport.getMaximumVisibleWidth();
+    int height = layoutContent(width);
+
+    if (height > viewport.getHeight())
     {
-        auto shortcutsBounds = createSection(bounds, "Shortcuts", bounds.getHeight());
-        
-        if (shortcutsLabel)
-            shortcutsLabel->setBounds(shortcutsBounds.removeFromTop(24));
-        
-        shortcutsBounds.removeFromTop(ModernLookAndFeel::Metrics::spacingSM);
-        
-        if (shortcutsText)
-            shortcutsText->setBounds(shortcutsBounds);
+        width -= viewport.getScrollBarThickness();
+        height = layoutContent(width);
     }
+
+    content.setSize(width, height);
+}
+
+int SettingsPanelComponent::layoutContent(int width)
+{
+    const int sectionGap = 12;
+    const int labelH = 28;
+    const int small = ModernLookAndFeel::Metrics::spacingXS;
+    const int gap = ModernLookAndFeel::Metrics::spacingSM;
+
+    juce::Rectangle<int> bounds(0, 0, width, 100000);
+
+    // Playback
+    playbackLabel->setBounds(bounds.removeFromTop(labelH));
+    bounds.removeFromTop(small);
+    {
+        auto row = bounds.removeFromTop(36);
+        const int buttonWidth = (row.getWidth() - gap) / 2;
+        playButton->setBounds(row.removeFromLeft(buttonWidth));
+        row.removeFromLeft(gap);
+        stopButton->setBounds(row);
+    }
+    bounds.removeFromTop(small);
+    loopButton->setBounds(bounds.removeFromTop(28));
+    bounds.removeFromTop(sectionGap);
+
+    // Tempo: slider with its value beside it
+    tempoLabel->setBounds(bounds.removeFromTop(labelH));
+    bounds.removeFromTop(small);
+    {
+        auto row = bounds.removeFromTop(28);
+        tempoValueLabel->setBounds(row.removeFromRight(84));
+        tempoSlider->setBounds(row);
+    }
+    bounds.removeFromTop(sectionGap);
+
+    // Musical settings: key and mode side by side
+    musicalLabel->setBounds(bounds.removeFromTop(labelH));
+    bounds.removeFromTop(small);
+    {
+        auto labels = bounds.removeFromTop(18);
+        auto combos = bounds.removeFromTop(28);
+        const int columnWidth = (width - gap) / 2;
+
+        keyLabel->setBounds(labels.removeFromLeft(columnWidth));
+        labels.removeFromLeft(gap);
+        modeLabel->setBounds(labels);
+
+        keyComboBox->setBounds(combos.removeFromLeft(columnWidth));
+        combos.removeFromLeft(gap);
+        modeComboBox->setBounds(combos);
+    }
+    bounds.removeFromTop(sectionGap);
+
+    // Audio settings
+    audioLabel->setBounds(bounds.removeFromTop(labelH));
+    bounds.removeFromTop(small);
+    clickTrackButton->setBounds(bounds.removeFromTop(28));
+    bounds.removeFromTop(small);
+    {
+        auto row = bounds.removeFromTop(28);
+        volumeLabel->setBounds(row.removeFromLeft(64));
+        volumeSlider->setBounds(row);
+    }
+    bounds.removeFromTop(sectionGap);
+
+    // Keyboard shortcuts
+    shortcutsLabel->setBounds(bounds.removeFromTop(labelH));
+    bounds.removeFromTop(small);
+    shortcutsText->setBounds(bounds.removeFromTop(72));
+
+    return 100000 - bounds.getHeight();
 }
 
 //==============================================================================
@@ -154,8 +156,8 @@ void SettingsPanelComponent::sliderValueChanged(juce::Slider* slider)
     }
     else if (slider == volumeSlider.get())
     {
-        // Handle volume changes (placeholder for now)
-        // Could connect to audio system volume control
+        if (onVolumeChanged)
+            onVolumeChanged(static_cast<float>(volumeSlider->getValue()));
     }
 }
 
@@ -236,6 +238,12 @@ void SettingsPanelComponent::setClickTrackEnabled(bool enabled)
     }
 }
 
+void SettingsPanelComponent::setVolume(float volume)
+{
+    if (volumeSlider)
+        volumeSlider->setValue(volume, juce::dontSendNotification);
+}
+
 //==============================================================================
 void SettingsPanelComponent::setupUI()
 {
@@ -244,6 +252,19 @@ void SettingsPanelComponent::setupUI()
     setupMusicalSection();
     setupAudioSection();
     setupShortcutsSection();
+    setupTooltips();
+}
+
+void SettingsPanelComponent::setupTooltips()
+{
+    playButton->setTooltip("Start playing the pattern from step 1 (Space or Enter)");
+    stopButton->setTooltip("Stop playback");
+    loopButton->setTooltip("Repeat the 32-step pattern until stopped");
+    tempoSlider->setTooltip("Tempo in beats per minute (40 to 240). Steps are 16th notes.");
+    keyComboBox->setTooltip("The key the Roman numeral chords are built in");
+    modeComboBox->setTooltip("The scale the chords are built from");
+    clickTrackButton->setTooltip("Play a click on every step, accented on each beat, during playback");
+    volumeSlider->setTooltip("Master volume of the built-in synth");
 }
 
 void SettingsPanelComponent::setupPlaybackSection()
@@ -252,7 +273,7 @@ void SettingsPanelComponent::setupPlaybackSection()
     playbackLabel = std::make_unique<juce::Label>("playback", "Playback");
     playbackLabel->setFont(ModernLookAndFeel::Typography::getSubheaderFont());
     playbackLabel->setColour(juce::Label::textColourId, ModernLookAndFeel::Colors::textPrimary);
-    addAndMakeVisible(*playbackLabel);
+    content.addAndMakeVisible(*playbackLabel);
     
     // Play button
     playButton = std::make_unique<juce::TextButton>("Play");
@@ -261,7 +282,7 @@ void SettingsPanelComponent::setupPlaybackSection()
     playButton->setAccessible(true);
     playButton->setTitle("Start playback");
     playButton->setDescription("Start playing the chord progression - Shortcut: Space or Enter");
-    addAndMakeVisible(*playButton);
+    content.addAndMakeVisible(*playButton);
     
     // Stop button
     stopButton = std::make_unique<juce::TextButton>("Stop");
@@ -269,14 +290,14 @@ void SettingsPanelComponent::setupPlaybackSection()
     stopButton->setColour(juce::TextButton::buttonOnColourId, ModernLookAndFeel::Colors::error);
     stopButton->setAccessible(true);
     stopButton->setTitle("Stop playback");
-    addAndMakeVisible(*stopButton);
+    content.addAndMakeVisible(*stopButton);
     
     // Loop button
     loopButton = std::make_unique<juce::ToggleButton>("Loop Playback");
     loopButton->addListener(this);
     loopButton->setAccessible(true);
     loopButton->setTitle("Enable loop playback");
-    addAndMakeVisible(*loopButton);
+    content.addAndMakeVisible(*loopButton);
     
     updatePlaybackButtons();
 }
@@ -287,7 +308,7 @@ void SettingsPanelComponent::setupTempoSection()
     tempoLabel = std::make_unique<juce::Label>("tempo", "Tempo");
     tempoLabel->setFont(ModernLookAndFeel::Typography::getSubheaderFont());
     tempoLabel->setColour(juce::Label::textColourId, ModernLookAndFeel::Colors::textPrimary);
-    addAndMakeVisible(*tempoLabel);
+    content.addAndMakeVisible(*tempoLabel);
     
     // Tempo slider
     tempoSlider = std::make_unique<juce::Slider>(juce::Slider::LinearHorizontal, juce::Slider::NoTextBox);
@@ -297,14 +318,14 @@ void SettingsPanelComponent::setupTempoSection()
     tempoSlider->setAccessible(true);
     tempoSlider->setTitle("Tempo slider");
     tempoSlider->setDescription("Adjust playback tempo from 40 to 240 BPM");
-    addAndMakeVisible(*tempoSlider);
+    content.addAndMakeVisible(*tempoSlider);
     
     // Tempo value label with monospaced font for numeric display
     tempoValueLabel = std::make_unique<juce::Label>("tempoValue", "");
     tempoValueLabel->setFont(ModernLookAndFeel::Typography::getMonospacedFont());
     tempoValueLabel->setColour(juce::Label::textColourId, ModernLookAndFeel::Colors::textPrimary);
     tempoValueLabel->setJustificationType(juce::Justification::centred);
-    addAndMakeVisible(*tempoValueLabel);
+    content.addAndMakeVisible(*tempoValueLabel);
     
     updateTempoDisplay();
 }
@@ -315,13 +336,13 @@ void SettingsPanelComponent::setupMusicalSection()
     musicalLabel = std::make_unique<juce::Label>("musical", "Musical Settings");
     musicalLabel->setFont(ModernLookAndFeel::Typography::getSubheaderFont());
     musicalLabel->setColour(juce::Label::textColourId, ModernLookAndFeel::Colors::textPrimary);
-    addAndMakeVisible(*musicalLabel);
+    content.addAndMakeVisible(*musicalLabel);
     
     // Key label and combo
     keyLabel = std::make_unique<juce::Label>("keyLabel", "Key:");
     keyLabel->setFont(ModernLookAndFeel::Typography::getCaptionFont());
     keyLabel->setColour(juce::Label::textColourId, ModernLookAndFeel::Colors::textSecondary);
-    addAndMakeVisible(*keyLabel);
+    content.addAndMakeVisible(*keyLabel);
     
     keyComboBox = std::make_unique<juce::ComboBox>("key");
     keyComboBox->addItemList({"C", "C#/Db", "D", "D#/Eb", "E", "F", "F#/Gb", "G", "G#/Ab", "A", "A#/Bb", "B"}, 1);
@@ -329,13 +350,13 @@ void SettingsPanelComponent::setupMusicalSection()
     keyComboBox->addListener(this);
     keyComboBox->setAccessible(true);
     keyComboBox->setTitle("Select musical key");
-    addAndMakeVisible(*keyComboBox);
+    content.addAndMakeVisible(*keyComboBox);
     
     // Mode label and combo
     modeLabel = std::make_unique<juce::Label>("modeLabel", "Mode:");
     modeLabel->setFont(ModernLookAndFeel::Typography::getCaptionFont());
     modeLabel->setColour(juce::Label::textColourId, ModernLookAndFeel::Colors::textSecondary);
-    addAndMakeVisible(*modeLabel);
+    content.addAndMakeVisible(*modeLabel);
     
     modeComboBox = std::make_unique<juce::ComboBox>("mode");
     modeComboBox->addItemList({
@@ -347,7 +368,7 @@ void SettingsPanelComponent::setupMusicalSection()
     modeComboBox->addListener(this);
     modeComboBox->setAccessible(true);
     modeComboBox->setTitle("Select musical mode/scale");
-    addAndMakeVisible(*modeComboBox);
+    content.addAndMakeVisible(*modeComboBox);
 }
 
 void SettingsPanelComponent::setupAudioSection()
@@ -356,20 +377,20 @@ void SettingsPanelComponent::setupAudioSection()
     audioLabel = std::make_unique<juce::Label>("audio", "Audio Settings");
     audioLabel->setFont(ModernLookAndFeel::Typography::getSubheaderFont());
     audioLabel->setColour(juce::Label::textColourId, ModernLookAndFeel::Colors::textPrimary);
-    addAndMakeVisible(*audioLabel);
+    content.addAndMakeVisible(*audioLabel);
     
     // Click track toggle
     clickTrackButton = std::make_unique<juce::ToggleButton>("Click Track");
     clickTrackButton->addListener(this);
     clickTrackButton->setAccessible(true);
     clickTrackButton->setTitle("Enable click track (metronome)");
-    addAndMakeVisible(*clickTrackButton);
+    content.addAndMakeVisible(*clickTrackButton);
     
     // Volume label and slider
     volumeLabel = std::make_unique<juce::Label>("volumeLabel", "Volume:");
     volumeLabel->setFont(ModernLookAndFeel::Typography::getCaptionFont());
     volumeLabel->setColour(juce::Label::textColourId, ModernLookAndFeel::Colors::textSecondary);
-    addAndMakeVisible(*volumeLabel);
+    content.addAndMakeVisible(*volumeLabel);
     
     volumeSlider = std::make_unique<juce::Slider>(juce::Slider::LinearHorizontal, juce::Slider::NoTextBox);
     volumeSlider->setRange(0.0, 1.0, 0.01);
@@ -377,7 +398,7 @@ void SettingsPanelComponent::setupAudioSection()
     volumeSlider->addListener(this);
     volumeSlider->setAccessible(true);
     volumeSlider->setTitle("Master volume");
-    addAndMakeVisible(*volumeSlider);
+    content.addAndMakeVisible(*volumeSlider);
 }
 
 void SettingsPanelComponent::setupShortcutsSection()
@@ -386,19 +407,19 @@ void SettingsPanelComponent::setupShortcutsSection()
     shortcutsLabel = std::make_unique<juce::Label>("shortcuts", "Keyboard Shortcuts");
     shortcutsLabel->setFont(ModernLookAndFeel::Typography::getSubheaderFont());
     shortcutsLabel->setColour(juce::Label::textColourId, ModernLookAndFeel::Colors::textPrimary);
-    addAndMakeVisible(*shortcutsLabel);
+    content.addAndMakeVisible(*shortcutsLabel);
     
     // Shortcuts text
     juce::String shortcutsStr = "Space/Enter: Play/Stop\n";
-    shortcutsStr += "Arrow Keys: Navigate\n";
-    shortcutsStr += "Tab: Focus Next\n";
-    shortcutsStr += "Shift+Tab: Focus Previous";
+    shortcutsStr += "Cmd/Ctrl+N, O, S: New, Open, Save\n";
+    shortcutsStr += "Cmd/Ctrl+Shift+S: Save As\n";
+    shortcutsStr += "Tab / Shift+Tab: Move focus";
     
     shortcutsText = std::make_unique<juce::Label>("shortcutsText", shortcutsStr);
     shortcutsText->setFont(ModernLookAndFeel::Typography::getSmallFont());
     shortcutsText->setColour(juce::Label::textColourId, ModernLookAndFeel::Colors::textSecondary);
     shortcutsText->setJustificationType(juce::Justification::topLeft);
-    addAndMakeVisible(*shortcutsText);
+    content.addAndMakeVisible(*shortcutsText);
 }
 
 void SettingsPanelComponent::updatePlaybackButtons()

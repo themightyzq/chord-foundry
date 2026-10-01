@@ -44,6 +44,10 @@ target_sources(ChordFoundry PRIVATE
     Source/Audio/ChordSynthesizer.h
     Source/Audio/ArpeggiatorEngine.cpp
     Source/Audio/ArpeggiatorEngine.h
+    Source/Audio/StepSequencer.cpp
+    Source/Audio/StepSequencer.h
+    Source/Audio/SequencerPatternBuilder.cpp
+    Source/Audio/SequencerPatternBuilder.h
     Source/UI/ChordPanelComponent.cpp
     Source/UI/ChordPanelComponent.h
     Source/UI/SettingsPanelComponent.cpp
@@ -58,6 +62,8 @@ target_sources(ChordFoundry PRIVATE
     Source/UI/ModernLookAndFeel.h
     Source/Data/ChordProgression.cpp
     Source/Data/ChordProgression.h
+    Source/Data/ProjectFile.cpp
+    Source/Data/ProjectFile.h
     Source/Export/MidiExporter.cpp
     Source/Export/MidiExporter.h)
 
@@ -152,8 +158,14 @@ target_sources(ChordFoundryTests PRIVATE
     Source/Audio/ArpeggiatorEngine.h
     Source/Audio/ChordSynthesizer.cpp
     Source/Audio/ChordSynthesizer.h
+    Source/Audio/StepSequencer.cpp
+    Source/Audio/StepSequencer.h
+    Source/Audio/SequencerPatternBuilder.cpp
+    Source/Audio/SequencerPatternBuilder.h
     Source/Data/ChordProgression.cpp
     Source/Data/ChordProgression.h
+    Source/Data/ProjectFile.cpp
+    Source/Data/ProjectFile.h
     Source/Export/MidiExporter.cpp
     Source/Export/MidiExporter.h
     Source/MusicTheory/MusicTheoryEngine.cpp
@@ -161,6 +173,9 @@ target_sources(ChordFoundryTests PRIVATE
     Tests/ArpeggiatorEngineTests.cpp
     Tests/ChordSynthesizerTests.cpp
     Tests/MidiExporterTests.cpp
+    Tests/ProjectFileTests.cpp
+    Tests/SequencerPatternBuilderTests.cpp
+    Tests/StepSequencerTests.cpp
     Tests/TestMain.cpp)
 
 target_compile_definitions(ChordFoundryTests PRIVATE
@@ -183,4 +198,10 @@ target_link_libraries(ChordFoundryTests PRIVATE
     juce::juce_graphics
     juce::juce_dsp)
 
-add_test(NAME ArpeggiatorEngineTests COMMAND ChordFoundryTests)
+# One ctest entry per suite: the runner takes the suite name as its only argument.
+add_test(NAME ArpeggiatorEngineTests COMMAND ChordFoundryTests ArpeggiatorEngine)
+add_test(NAME ChordSynthesizerTests COMMAND ChordFoundryTests ChordSynthesizer)
+add_test(NAME MidiExporterTests COMMAND ChordFoundryTests MidiExporter)
+add_test(NAME ProjectFileTests COMMAND ChordFoundryTests ProjectFile)
+add_test(NAME StepSequencerTests COMMAND ChordFoundryTests StepSequencer)
+add_test(NAME SequencerPatternBuilderTests COMMAND ChordFoundryTests SequencerPatternBuilder)

@@ -1,13 +1,84 @@
 #include "MainComponent.h"
+#include <juce_audio_utils/juce_audio_utils.h>
 #include "UI/ChordPanelComponent.h"
 #include "UI/SettingsPanelComponent.h"
 #include "UI/StructurePanelComponent.h"
 #include "UI/PatternEditorComponent.h"
 #include "Audio/ChordSynthesizer.h"
+#include "Audio/SequencerPatternBuilder.h"
 #include "MusicTheory/MusicTheoryEngine.h"
 #include "Export/MidiExporter.h"
 
 namespace ChordFoundry {
+
+//==============================================================================
+// The scrolling surface the four panels sit on. It only forwards its size changes.
+class MainComponent::ContentArea : public juce::Component
+{
+public:
+    std::function<void()> onLayout;
+
+    void resized() override
+    {
+        if (onLayout)
+            onLayout();
+    }
+};
+
+//==============================================================================
+namespace {
+
+// Contents of the audio settings dialog: JUCE's own device selector (output device,
+// sample rate, buffer size) on the synth's device manager.
+class AudioSettingsComponent : public juce::Component
+{
+public:
+    AudioSettingsComponent(juce::AudioDeviceManager& manager, juce::LookAndFeel& lookAndFeel)
+        : selector(manager, 0, 0, 2, 2, false, false, true, false)
+    {
+        setLookAndFeel(&lookAndFeel);
+        addAndMakeVisible(selector);
+        setSize(520, 380);
+        setTitle("Audio settings");
+    }
+
+    ~AudioSettingsComponent() override { setLookAndFeel(nullptr); }
+
+    void resized() override { selector.setBounds(getLocalBounds().reduced(12)); }
+
+private:
+    juce::AudioDeviceSelectorComponent selector;
+};
+
+void collectLayoutProblems(juce::Component& parent, juce::String& out, const juce::String& path)
+{
+    // A viewport's content is meant to extend past the viewport, so stop there.
+    if (dynamic_cast<juce::Viewport*>(&parent) != nullptr)
+        return;
+
+    for (auto* child : parent.getChildren())
+    {
+        if (child == nullptr || ! child->isVisible())
+            continue;
+
+        const auto name = path + "/" + (child->getName().isNotEmpty() ? child->getName() : juce::String("?"));
+
+        if (! parent.getLocalBounds().contains(child->getBounds()))
+            out << "  CLIPPED " << name << " bounds " << child->getBounds().toString()
+                << " not inside parent " << parent.getLocalBounds().toString() << "\n";
+
+        const bool isControl = dynamic_cast<juce::Button*>(child) != nullptr
+                            || dynamic_cast<juce::ComboBox*>(child) != nullptr
+                            || dynamic_cast<juce::Slider*>(child) != nullptr;
+
+        if (isControl && (child->getHeight() < 22 || child->getWidth() < 22))
+            out << "  SMALL " << name << " " << child->getWidth() << "x" << child->getHeight() << "\n";
+
+        collectLayoutProblems(*child, out, name);
+    }
+}
+
+} // namespace
 
 //==============================================================================
 MainComponent::MainComponent()
@@ -19,9 +90,20 @@ MainComponent::MainComponent()
     // Initialize core data structures
     chordProgression = std::make_unique<ChordProgression>();
     
-    // Initialize synthesizer and open the default audio output device
+    // The synthesizer is created here but its audio device is opened by startAudio().
     synthesizer = std::make_unique<ChordSynthesizer>();
-    synthesizer->start();
+    synthesizer->setMasterGain(masterVolume);
+    synthesizer->setTempo(currentTempo);
+    synthesizer->onDeviceStateChanged = [this]
+    {
+        if (isPlaying && ! synthesizer->hasAudioDevice())
+        {
+            stopPlayback();
+            settingsPanel->setPlaybackState(false);
+            showAudioProblem();
+        }
+        repaint();
+    };
     
     // Initialize UI components
     chordPanel = std::make_unique<ChordPanelComponent>();
@@ -35,49 +117,156 @@ MainComponent::MainComponent()
     structurePanel->setLookAndFeel(modernLookAndFeel.get());
     patternEditor->setLookAndFeel(modernLookAndFeel.get());
     
-    // Add components to hierarchy
-    addAndMakeVisible(*chordPanel);
-    addAndMakeVisible(*settingsPanel);
-    addAndMakeVisible(*structurePanel);
-    addAndMakeVisible(*patternEditor);
+    // The panels sit on a scrolling content area.
+    contentArea = std::make_unique<ContentArea>();
+    contentArea->setName("content");
+    contentArea->onLayout = [this] { layoutPanels(contentArea->getLocalBounds()); };
+    contentArea->addAndMakeVisible(*chordPanel);
+    contentArea->addAndMakeVisible(*settingsPanel);
+    contentArea->addAndMakeVisible(*structurePanel);
+    contentArea->addAndMakeVisible(*patternEditor);
+
+    contentViewport.setViewedComponent(contentArea.get(), false);
+    contentViewport.setScrollBarsShown(true, true);
+    contentViewport.setScrollBarThickness(12);
+    contentViewport.setTitle("Main content");
+    contentViewport.setWantsKeyboardFocus(false);
+    addAndMakeVisible(contentViewport);
     
-    setupLayout();
+    setupToolbar();
     setupCallbacks();
-    setupKeyboardShortcuts();
-    setupInitialState();
+    setupCommands();
     
     // Set up keyboard listener and accessibility
     addKeyListener(this);
+    addKeyListener(commandManager.getKeyMappings());
     setWantsKeyboardFocus(true);
     setAccessible(true);
     setTitle("Chord Foundry - Professional chord progression and sequencing tool");
     setDescription("Main application window with chord selection, structure editing, and pattern sequencing");
+
+    settingsPanel->setVolume(masterVolume);
     
-    // Set initial size with modern proportions
-    auto totalWidth = CHORD_PANEL_WIDTH + SETTINGS_PANEL_WIDTH + 500 + (PANEL_SPACING * 3) + (WINDOW_PADDING * 2);
-    auto totalHeight = HEADER_HEIGHT + PANEL_HEIGHT + PATTERN_EDITOR_HEIGHT + PANEL_SPACING + (WINDOW_PADDING * 2);
-    setSize(totalWidth, totalHeight);
-    
-    // Note: Constrainer would be set by parent window if needed
-    // This component doesn't directly manage window constraints
+    // Set initial size: comfortably above the minimum content size so the layout has room.
+    setSize(1280, 820);
+
+    savedSnapshot = getCurrentSnapshot();
+    refreshSequencerPattern();
 }
 
 MainComponent::~MainComponent()
 {
-    // Clean up look and feel
-    setLookAndFeel(nullptr);
-    
-    stopTimer();
-    if (isPlaying) {
-        stopPlayback();
-    }
+   #if JUCE_MAC
+    juce::MenuBarModel::setMacMainMenu(nullptr);
+   #endif
 
-    if (synthesizer) {
+    if (audioSettingsWindow != nullptr)
+        delete audioSettingsWindow.getComponent();
+
+    stopTimer();
+    if (isPlaying)
+        stopPlayback();
+
+    if (synthesizer)
+    {
+        synthesizer->onDeviceStateChanged = nullptr;
         synthesizer->stop();
     }
+
+    // Children must not outlive the look and feel they use.
+    contentViewport.setViewedComponent(nullptr, false);
+    contentArea.reset();
+    chordPanel.reset();
+    settingsPanel.reset();
+    structurePanel.reset();
+    patternEditor.reset();
+    setLookAndFeel(nullptr);
 }
 
 //==============================================================================
+void MainComponent::startAudio()
+{
+    if (synthesizer->start())
+        return;
+
+    // Tell the user once the window is up, not from inside the constructor.
+    juce::MessageManager::callAsync([safe = juce::Component::SafePointer<MainComponent>(this)]
+    {
+        if (safe != nullptr)
+            safe->showAudioProblem();
+    });
+}
+
+void MainComponent::showAudioProblem()
+{
+    if (audioProblemShowing)
+        return;
+
+    const auto problem = synthesizer->getDeviceProblem();
+    if (problem.isEmpty())
+        return;
+
+    audioProblemShowing = true;
+
+    const auto options = juce::MessageBoxOptions()
+                             .withIconType(juce::MessageBoxIconType::WarningIcon)
+                             .withTitle("No audio output")
+                             .withMessage(problem)
+                             .withButton("Audio Settings")
+                             .withButton("Try Again")
+                             .withButton("Dismiss")
+                             .withAssociatedComponent(this);
+
+    juce::AlertWindow::showAsync(options, [safe = juce::Component::SafePointer<MainComponent>(this)](int result)
+    {
+        if (safe == nullptr)
+            return;
+
+        safe->audioProblemShowing = false;
+
+        if (result == 1)
+        {
+            safe->showAudioSettings();
+        }
+        else if (result == 2)
+        {
+            if (! safe->synthesizer->start())
+                safe->showAudioProblem();
+            safe->repaint();
+        }
+    });
+}
+
+void MainComponent::showAudioSettings()
+{
+    if (audioSettingsWindow != nullptr)
+    {
+        audioSettingsWindow->toFront(true);
+        return;
+    }
+
+    juce::DialogWindow::LaunchOptions options;
+    options.content.setOwned(new AudioSettingsComponent(synthesizer->getDeviceManager(), *modernLookAndFeel));
+    options.dialogTitle = "Audio Settings";
+    options.dialogBackgroundColour = ModernLookAndFeel::Colors::surface;
+    options.componentToCentreAround = this;
+    options.escapeKeyTriggersCloseButton = true;
+    options.useNativeTitleBar = true;
+    options.resizable = false;
+    audioSettingsWindow = options.launchAsync();
+}
+
+//==============================================================================
+juce::Rectangle<int> MainComponent::getHeaderBounds() const
+{
+    return getLocalBounds().withTrimmedTop(getMenuBarHeight()).removeFromTop(HEADER_HEIGHT);
+}
+
+int MainComponent::getMenuBarHeight() const
+{
+    return menuBar != nullptr ? MENU_BAR_HEIGHT : 0;
+}
+
 void MainComponent::paint(juce::Graphics& g)
 {
     // Create sophisticated dark gradient background typical of professional audio apps
@@ -96,7 +285,7 @@ void MainComponent::paint(juce::Graphics& g)
     g.fillRect(bounds);
     
     // Draw header area with professional gradient
-    auto headerBounds = getLocalBounds().removeFromTop(HEADER_HEIGHT);
+    auto headerBounds = getHeaderBounds();
     
     juce::ColourGradient headerGradient(
         ModernLookAndFeel::Colors::surfaceElevated.brighter(0.05f), headerBounds.getTopLeft().toFloat(),
@@ -113,28 +302,23 @@ void MainComponent::paint(juce::Graphics& g)
     g.setColour(juce::Colours::black.withAlpha(0.2f));
     g.fillRect(headerBounds.removeFromBottom(2));
     
-    // Draw title with enhanced typography and subtle glow
-    g.setColour(ModernLookAndFeel::Colors::textPrimary);
-    g.setFont(ModernLookAndFeel::Typography::getHeaderFont());
-    
-    auto titleBounds = headerBounds.reduced(WINDOW_PADDING, 0);
-    
-    // Add subtle text glow for premium feel
-    g.setColour(ModernLookAndFeel::Colors::primary.withAlpha(0.1f));
-    g.drawText("Chord Foundry", titleBounds.translated(1, 1), juce::Justification::centred);
+    // The toolbar buttons sit at the left and right edges; the title is centred between them.
+    auto titleArea = getHeaderBounds().withTrimmedLeft(saveAsButton.getRight() + WINDOW_PADDING)
+                                      .withTrimmedRight(getWidth() - audioButton.getX() + WINDOW_PADDING);
+    auto titleBounds = titleArea.removeFromTop(38);
     
     g.setColour(ModernLookAndFeel::Colors::textPrimary);
-    g.drawText("Chord Foundry", titleBounds, juce::Justification::centred);
+    g.setFont(ModernLookAndFeel::Typography::getHeaderFont().withHeight(26.0f));
+    g.drawText("Chord Foundry", titleBounds.withTrimmedTop(4), juce::Justification::centred);
     
-    // Draw subtitle with improved contrast
+    // Subtitle
     g.setColour(ModernLookAndFeel::Colors::textSecondary.brighter(0.3f));
     g.setFont(ModernLookAndFeel::Typography::getCaptionFont());
-    auto subtitleBounds = titleBounds.removeFromBottom(20);
     g.drawText("Professional chord progression and sequencing tool", 
-               subtitleBounds, juce::Justification::centred);
+               titleArea, juce::Justification::centredTop);
     
     // Enhanced status bar with gradient background
-    auto statusBounds = getLocalBounds().removeFromBottom(30);
+    auto statusBounds = getLocalBounds().removeFromBottom(STATUS_BAR_HEIGHT);
     
     // Status bar gradient for professional appearance
     juce::ColourGradient statusGradient(
@@ -155,21 +339,14 @@ void MainComponent::paint(juce::Graphics& g)
     juce::String stateText = "Key: " + currentKey + " | Mode: " + currentMode + 
                            " | Tempo: " + juce::String(currentTempo, 1) + " BPM";
     
-    if (isPlaying) {
-        stateText += " | ▶ Playing (Step " + juce::String(currentStep + 1) + "/32)";
-        g.setColour(ModernLookAndFeel::Colors::success.brighter(0.2f));
-    } else {
-        g.setColour(ModernLookAndFeel::Colors::textSecondary.brighter(0.1f));
-    }
-    
-    g.drawText(stateText, textBounds, juce::Justification::centredLeft);
+    if (isPlaying)
+        stateText += " | Playing (Step " + juce::String(juce::jmax(0, currentStep) + 1) + "/32)";
     
     // Enhanced playback indicator with glow effect
     if (isPlaying) {
-        auto indicatorBounds = statusBounds.removeFromRight(60).reduced(10, 8);
-        auto dotBounds = indicatorBounds.removeFromLeft(12).toFloat();
+        auto indicatorBounds = textBounds.removeFromRight(60);
+        auto dotBounds = indicatorBounds.removeFromLeft(12).withSizeKeepingCentre(12, 12).toFloat();
         
-        // Add glow around the live indicator
         g.setColour(ModernLookAndFeel::Colors::success.withAlpha(0.3f));
         g.fillEllipse(dotBounds.expanded(2.0f));
         
@@ -178,145 +355,148 @@ void MainComponent::paint(juce::Graphics& g)
         
         g.setColour(ModernLookAndFeel::Colors::success.brighter(0.2f));
         g.setFont(ModernLookAndFeel::Typography::getSmallFont().boldened());
-        g.drawText("LIVE", indicatorBounds, juce::Justification::centredLeft);
+        g.drawText("LIVE", indicatorBounds.withTrimmedLeft(4), juce::Justification::centredLeft);
+        g.setFont(ModernLookAndFeel::Typography::getSmallFont());
     }
+
+    // A missing audio device is shown here as well as in the alert, so it is not forgotten.
+    if (synthesizer != nullptr && synthesizer->isRunning() && ! synthesizer->hasAudioDevice())
+    {
+        auto audioText = textBounds.removeFromRight(260);
+        g.setColour(ModernLookAndFeel::Colors::error.brighter(0.3f)); // 5:1 against the status bar
+        g.setFont(ModernLookAndFeel::Typography::getSmallFont().boldened());
+        g.drawText("No audio output - open Audio Settings", audioText, juce::Justification::centredRight);
+        g.setFont(ModernLookAndFeel::Typography::getSmallFont());
+    }
+
+    g.setColour(isPlaying ? ModernLookAndFeel::Colors::success.brighter(0.2f)
+                          : ModernLookAndFeel::Colors::textSecondary.brighter(0.1f));
+    g.drawText(stateText, textBounds, juce::Justification::centredLeft);
 }
 
 void MainComponent::resized()
 {
     auto bounds = getLocalBounds();
-    auto totalWidth = bounds.getWidth();
-    auto totalHeight = bounds.getHeight();
-    
-    // Ensure minimum usable dimensions
-    if (totalWidth < MIN_WINDOW_WIDTH || totalHeight < MIN_WINDOW_HEIGHT)
-    {
-        // Hide non-essential elements if window is too small
-        DBG("Window too small for optimal layout: " + juce::String(totalWidth) + "x" + juce::String(totalHeight));
-    }
-    
-    // Reserve space for header and status bar
-    bounds.removeFromTop(HEADER_HEIGHT);
-    auto statusBarHeight = 30;
-    bounds.removeFromBottom(statusBarHeight);
-    
-    // Apply responsive window padding based on screen size
-    auto responsivePadding = juce::jmax(8, juce::jmin(WINDOW_PADDING, totalWidth / 40));
-    bounds = bounds.reduced(responsivePadding);
-    
-    // Determine layout mode based on available space
-    bool useVerticalLayout = totalWidth < 900 || totalHeight < 700;
-    
-    if (useVerticalLayout)
-    {
-        layoutVertically(bounds);
-    }
-    else
-    {
-        layoutHorizontally(bounds);
-    }
+
+    if (menuBar != nullptr)
+        menuBar->setBounds(bounds.removeFromTop(MENU_BAR_HEIGHT));
+
+    // Header toolbar: project buttons at the left, audio settings at the right.
+    auto header = bounds.removeFromTop(HEADER_HEIGHT).reduced(WINDOW_PADDING, 0);
+    constexpr int buttonH = 30;
+    auto row = header.withSizeKeepingCentre(header.getWidth(), buttonH);
+
+    newButton.setBounds(row.removeFromLeft(56));
+    row.removeFromLeft(6);
+    openButton.setBounds(row.removeFromLeft(60));
+    row.removeFromLeft(6);
+    saveButton.setBounds(row.removeFromLeft(56));
+    row.removeFromLeft(6);
+    saveAsButton.setBounds(row.removeFromLeft(72));
+    audioButton.setBounds(row.removeFromRight(124));
+
+    bounds.removeFromBottom(STATUS_BAR_HEIGHT);
+    contentViewport.setBounds(bounds);
+    updateContentSize();
+    repaint();
 }
 
-void MainComponent::layoutHorizontally(juce::Rectangle<int> bounds)
+void MainComponent::updateContentSize()
 {
-    // Traditional 3-column layout for larger screens
-    auto panelArea = bounds.removeFromTop(PANEL_HEIGHT);
-    auto availableWidth = panelArea.getWidth();
-    
-    // Calculate responsive panel widths
-    auto actualChordPanelWidth = juce::jmin(CHORD_PANEL_WIDTH, 
-                                           juce::jmax(300, availableWidth / 3));
-    auto actualSettingsPanelWidth = juce::jmin(SETTINGS_PANEL_WIDTH,
-                                              juce::jmax(280, availableWidth / 4));
-    
-    // Chord panel (left)
-    auto chordPanelBounds = panelArea.removeFromLeft(actualChordPanelWidth);
-    chordPanel->setBounds(chordPanelBounds);
-    
-    if (panelArea.getWidth() > PANEL_SPACING * 2 + actualSettingsPanelWidth + 200)
-    {
-        panelArea.removeFromLeft(PANEL_SPACING);
-        
-        // Settings panel (right)
-        auto settingsPanelBounds = panelArea.removeFromRight(actualSettingsPanelWidth);
-        settingsPanel->setBounds(settingsPanelBounds);
-        panelArea.removeFromRight(PANEL_SPACING);
-        
-        // Structure panel (center - remaining space)
-        structurePanel->setBounds(panelArea);
-    }
-    else
-    {
-        // Not enough space for 3 columns, stack settings and structure
-        auto halfHeight = (PANEL_HEIGHT - PANEL_SPACING) / 2;
-        
-        auto topRow = panelArea.removeFromTop(halfHeight);
-        structurePanel->setBounds(topRow);
-        
-        panelArea.removeFromTop(PANEL_SPACING);
-        settingsPanel->setBounds(panelArea);
-    }
-    
-    bounds.removeFromTop(PANEL_SPACING);
-    
-    // Pattern editor area (responsive height)
-    auto patternHeight = juce::jmax(200, juce::jmin(PATTERN_EDITOR_HEIGHT, bounds.getHeight()));
-    auto patternBounds = bounds.removeFromTop(patternHeight);
-    patternEditor->setBounds(patternBounds);
+    // Fill the viewport; if it is smaller than the layout needs, keep the layout size and let
+    // the viewport scroll. Leave room for a scroll bar only when that bar will be shown.
+    const int bar = contentViewport.getScrollBarThickness();
+    const int visibleW = contentViewport.getWidth();
+    const int visibleH = contentViewport.getHeight();
+
+    const bool needsVertical = visibleH < MIN_CONTENT_HEIGHT;
+    const bool needsHorizontal = visibleW - (needsVertical ? bar : 0) < MIN_CONTENT_WIDTH;
+
+    const int w = juce::jmax(MIN_CONTENT_WIDTH, visibleW - ((needsVertical || visibleH - (needsHorizontal ? bar : 0) < MIN_CONTENT_HEIGHT) ? bar : 0));
+    const int h = juce::jmax(MIN_CONTENT_HEIGHT, visibleH - (needsHorizontal ? bar : 0));
+
+    contentArea->setSize(w, h);
 }
 
-void MainComponent::layoutVertically(juce::Rectangle<int> bounds)
+void MainComponent::layoutPanels(juce::Rectangle<int> area)
 {
-    // Vertical stacking layout for smaller screens
-    auto totalHeight = bounds.getHeight();
-    
-    // Divide available space proportionally
-    auto chordPanelHeight = juce::jmax(200, totalHeight / 4);
-    auto settingsHeight = juce::jmax(180, totalHeight / 5);
-    auto structureHeight = juce::jmax(150, totalHeight / 5);
-    auto patternHeight = juce::jmax(200, totalHeight - chordPanelHeight - settingsHeight - structureHeight - (PANEL_SPACING * 3));
-    
-    // Chord panel (top)
-    auto chordBounds = bounds.removeFromTop(chordPanelHeight);
-    chordPanel->setBounds(chordBounds);
+    auto bounds = area.reduced(WINDOW_PADDING);
+
+    // Three columns on top, the pattern editor below. The top row takes about two thirds of the
+    // height, the pattern editor the rest, each within sensible limits.
+    const int usableHeight = bounds.getHeight() - PANEL_SPACING;
+    const int patternHeight = juce::jlimit(190, 320, juce::roundToInt(usableHeight * 0.32f));
+    const int topHeight = usableHeight - patternHeight;
+
+    auto topRow = bounds.removeFromTop(topHeight);
     bounds.removeFromTop(PANEL_SPACING);
-    
-    // Settings panel
-    auto settingsBounds = bounds.removeFromTop(settingsHeight);
-    settingsPanel->setBounds(settingsBounds);
-    bounds.removeFromTop(PANEL_SPACING);
-    
-    // Structure panel
-    auto structureBounds = bounds.removeFromTop(structureHeight);
-    structurePanel->setBounds(structureBounds);
-    bounds.removeFromTop(PANEL_SPACING);
-    
-    // Pattern editor (remaining space)
     patternEditor->setBounds(bounds);
+
+    const int chordWidth = juce::jlimit(300, 400, juce::roundToInt(topRow.getWidth() * 0.30f));
+    const int settingsWidth = juce::jlimit(270, 320, juce::roundToInt(topRow.getWidth() * 0.26f));
+
+    chordPanel->setBounds(topRow.removeFromLeft(chordWidth));
+    topRow.removeFromLeft(PANEL_SPACING);
+    settingsPanel->setBounds(topRow.removeFromRight(settingsWidth));
+    topRow.removeFromRight(PANEL_SPACING);
+    structurePanel->setBounds(topRow);
+}
+
+juce::String MainComponent::describeLayout() const
+{
+    juce::String out;
+    out << "window " << getWidth() << "x" << getHeight() << "\n";
+    out << "viewport " << contentViewport.getBounds().toString()
+        << " content " << contentArea->getWidth() << "x" << contentArea->getHeight()
+        << (contentArea->getHeight() > contentViewport.getMaximumVisibleHeight()
+            || contentArea->getWidth() > contentViewport.getMaximumVisibleWidth() ? " (scrolls)" : " (fits)") << "\n";
+
+    const auto line = [&out](const char* name, const juce::Component& c)
+    {
+        out << "  " << name << " " << c.getBounds().toString() << "\n";
+    };
+    line("chordPanel", *chordPanel);
+    line("structurePanel", *structurePanel);
+    line("settingsPanel", *settingsPanel);
+    line("patternEditor", *patternEditor);
+
+    out << "problems:\n";
+    const auto before = out.length();
+    collectLayoutProblems(*const_cast<MainComponent*>(this), out, "main");
+    if (out.length() == before)
+        out << "  none\n";
+
+    return out;
 }
 
 //==============================================================================
 void MainComponent::timerCallback()
 {
-    if (isPlaying) {
-        auto currentTime = juce::Time::getMillisecondCounter();
-        
-        if (currentTime >= lastStepTime + static_cast<juce::int64>(stepDurationMs)) {
-            processCurrentStep();
-            currentStep = (currentStep + 1) % 32;
-            
-            if (currentStep == 0 && !loopEnabled) {
-                stopPlayback();
-            }
-            
-            lastStepTime = currentTime;
-            updatePlayheadDisplay();
-        }
+    if (! isPlaying)
+        return;
+
+    // The audio engine counts the steps. This only follows it for the display.
+    const int step = synthesizer->getSequencerStep();
+    if (step != currentStep)
+    {
+        currentStep = step;
+        if (currentStep >= 0)
+            chordProgression->setCurrentStep(currentStep);
+        updatePlayheadDisplay();
+    }
+
+    // A pattern that is not looping ends by itself on the audio thread.
+    if (synthesizer->getSequencerFinishedCount() != finishedCountAtStart)
+    {
+        stopPlayback();
+        settingsPanel->setPlaybackState(false);
     }
 }
 
 bool MainComponent::keyPressed(const juce::KeyPress& key, juce::Component* originatingComponent)
 {
+    juce::ignoreUnused(originatingComponent);
+
     // Handle keyboard shortcuts matching Python implementation
     if (key == juce::KeyPress::spaceKey || key == juce::KeyPress::returnKey) {
         // Play/Stop toggle
@@ -352,6 +532,7 @@ void MainComponent::onChordAdded()
         updatePatternEditorState();
         selectedRoman.clear();
         updateChordPanelState();
+        modelChanged();
     }
 }
 
@@ -362,10 +543,13 @@ void MainComponent::onChordRemoved(int index)
     
     updateStructurePanelState();
     updatePatternEditorState();
+    modelChanged();
 }
 
 void MainComponent::onChordModified(int index, const ChordData& newData)
 {
+    juce::ignoreUnused(newData);
+
     if (chordProgression->isValidChordIndex(index)) {
         // TODO: Implement chord modification in ChordProgression class
         DBG("Chord modified at index: " + juce::String(index));
@@ -380,6 +564,7 @@ void MainComponent::onClearAllChords()
     
     updateStructurePanelState();
     updatePatternEditorState();
+    modelChanged();
 }
 
 void MainComponent::onRandomizeChords()
@@ -388,6 +573,7 @@ void MainComponent::onRandomizeChords()
     DBG("Chords randomized");
     
     updateStructurePanelState();
+    modelChanged();
 }
 
 //==============================================================================
@@ -396,35 +582,46 @@ void MainComponent::onRandomizeChords()
 void MainComponent::onTempoChanged(float newTempo)
 {
     currentTempo = juce::jlimit(40.0f, 240.0f, newTempo);
-    calculateStepDuration();
+    synthesizer->setTempo(currentTempo);
     DBG("Tempo changed to: " + juce::String(currentTempo, 1) + " BPM");
-    repaint();
+    modelChanged();
 }
 
 void MainComponent::onKeyChanged(const juce::String& newKey)
 {
     currentKey = newKey;
     DBG("Key changed to: " + currentKey);
-    repaint();
+    modelChanged();
 }
 
 void MainComponent::onModeChanged(const juce::String& newMode)
 {
     currentMode = newMode;
     DBG("Mode changed to: " + currentMode);
-    repaint();
+    modelChanged();
 }
 
 void MainComponent::onClickTrackChanged(bool enabled)
 {
     clickTrackEnabled = enabled;
+    synthesizer->setSequencerClickEnabled(enabled);
     DBG("Click track: " + juce::String(enabled ? "enabled" : "disabled"));
+    modelChanged();
 }
 
 void MainComponent::onLoopChanged(bool enabled)
 {
     loopEnabled = enabled;
+    synthesizer->setLoop(enabled);
     DBG("Loop: " + juce::String(enabled ? "enabled" : "disabled"));
+    modelChanged();
+}
+
+void MainComponent::onVolumeChanged(float newVolume)
+{
+    masterVolume = juce::jlimit(0.0f, 1.0f, newVolume);
+    synthesizer->setMasterGain(masterVolume);
+    modelChanged();
 }
 
 void MainComponent::onPlaybackStateChanged(bool shouldPlay)
@@ -447,18 +644,28 @@ void MainComponent::onBlockAdded(const BlockData& block)
     DBG("Block added: chord " + juce::String(block.chordIndex) + 
         " at step " + juce::String(block.startStep) + 
         " length " + juce::String(block.lengthSteps));
+
+    // The progression is the source of truth; show exactly what it accepted.
+    updatePatternEditorState();
+    modelChanged();
 }
 
 void MainComponent::onBlockRemoved(int blockIndex)
 {
     chordProgression->removeBlock(blockIndex);
     DBG("Block removed at index: " + juce::String(blockIndex));
+
+    updatePatternEditorState();
+    modelChanged();
 }
 
 void MainComponent::onBlockModified(int blockIndex, const BlockData& newBlock)
 {
-    // TODO: Implement block modification
+    chordProgression->replaceBlock(blockIndex, newBlock);
     DBG("Block modified at index: " + juce::String(blockIndex));
+
+    updatePatternEditorState();
+    modelChanged();
 }
 
 void MainComponent::onPatternRandomized(int minBlocks, int maxBlocks)
@@ -466,6 +673,7 @@ void MainComponent::onPatternRandomized(int minBlocks, int maxBlocks)
     chordProgression->randomizeBlocks(minBlocks, maxBlocks);
     DBG("Pattern randomized: " + juce::String(minBlocks) + "-" + juce::String(maxBlocks) + " blocks");
     updatePatternEditorState();
+    modelChanged();
 }
 
 void MainComponent::onPatternCleared()
@@ -473,6 +681,7 @@ void MainComponent::onPatternCleared()
     chordProgression->clearBlocks();
     DBG("Pattern cleared");
     updatePatternEditorState();
+    modelChanged();
 }
 
 //==============================================================================
@@ -496,11 +705,9 @@ void MainComponent::onExportMidi()
         
         if (file != juce::File{})
         {
-            // Get the current blocks from pattern editor
-            auto blocks = patternEditor->getAllBlocks();
-            
-            // Get the chord progression
-            auto chords = chordProgression->getChords();
+            // Export what is actually in the project, not a copy held by the editor.
+            const auto& blocks = chordProgression->getBlocks();
+            const auto& chords = chordProgression->getChords();
             
             // Export to MIDI
             bool success = MidiExporter::exportToFile(file, blocks, chords, 
@@ -544,9 +751,42 @@ void MainComponent::stopChordPreview()
 
 //==============================================================================
 // Private methods
-void MainComponent::setupLayout()
+void MainComponent::setupToolbar()
 {
-    // Layout is handled in resized()
+    const auto setup = [this](juce::TextButton& button, const juce::String& tip, const juce::String& title)
+    {
+        button.setTooltip(tip);
+        button.setTitle(title);
+        button.setAccessible(true);
+        button.setWantsKeyboardFocus(true);
+        addAndMakeVisible(button);
+    };
+
+    setup(newButton, "Start a new, empty project (Cmd/Ctrl+N)", "New project");
+    setup(openButton, "Open a saved project (Cmd/Ctrl+O)", "Open project");
+    setup(saveButton, "Save the project (Cmd/Ctrl+S)", "Save project");
+    setup(saveAsButton, "Save the project under a new name (Cmd/Ctrl+Shift+S)", "Save project as");
+    setup(audioButton, "Choose the audio output device, sample rate and buffer size", "Audio settings");
+
+    newButton.onClick = [this] { newProject(); };
+    openButton.onClick = [this] { openProject(); };
+    saveButton.onClick = [this] { saveProject(); };
+    saveAsButton.onClick = [this] { saveProjectAs(); };
+    audioButton.onClick = [this] { showAudioSettings(); };
+}
+
+void MainComponent::setupCommands()
+{
+    commandManager.registerAllCommandsForTarget(this);
+    setApplicationCommandManagerToWatch(&commandManager);
+
+   #if JUCE_MAC
+    juce::MenuBarModel::setMacMainMenu(this);
+   #else
+    menuBar = std::make_unique<juce::MenuBarComponent>(this);
+    menuBar->setTitle("Menu bar");
+    addAndMakeVisible(*menuBar);
+   #endif
 }
 
 void MainComponent::setupCallbacks()
@@ -584,11 +824,16 @@ void MainComponent::setupCallbacks()
     settingsPanel->onClickTrackChanged = [this](bool enabled) {
         this->onClickTrackChanged(enabled);
     };
+
+    settingsPanel->onVolumeChanged = [this](float volume) {
+        this->onVolumeChanged(volume);
+    };
     
     // Set up structure panel callbacks
     structurePanel->onChordSelected = [this](int index) {
         DBG("Structure panel chord selected: " + juce::String(index));
-        // TODO: Highlight selected chord, maybe play preview
+        // Blocks drawn on the grid from now on use this chord.
+        patternEditor->setSelectedChordIndex(index);
     };
     
     structurePanel->onChordRemoved = [this](int index) {
@@ -629,32 +874,34 @@ void MainComponent::setupCallbacks()
     };
 }
 
-void MainComponent::setupKeyboardShortcuts()
-{
-    // Already handled in keyPressed()
-}
-
-void MainComponent::setupInitialState()
-{
-    calculateStepDuration();
-}
-
+//==============================================================================
+// Playback. The audio engine runs the steps; these just start and stop it.
 void MainComponent::startPlayback()
 {
-    if (!isPlaying) {
-        isPlaying = true;
-        currentStep = 0;
-        lastStepTime = juce::Time::getMillisecondCounter();
+    if (isPlaying)
+        return;
 
-        if (!synthesizer->isRunning()) {
-            synthesizer->start();
-        }
-
-        startTimer(static_cast<int>(stepDurationMs / 4)); // Check 4x per step for smooth timing
-        
-        DBG("Playback started");
-        repaint();
+    // The device may have failed at launch or been unplugged since; try again, and if it
+    // still is not there say so instead of "playing" in silence.
+    if (! synthesizer->start())
+    {
+        showAudioProblem();
+        return;
     }
+
+    refreshSequencerPattern();
+    synthesizer->setTempo(currentTempo);
+    synthesizer->setLoop(loopEnabled);
+    synthesizer->setSequencerClickEnabled(clickTrackEnabled);
+
+    finishedCountAtStart = synthesizer->getSequencerFinishedCount();
+    currentStep = -1;
+    isPlaying = true;
+    synthesizer->startSequencer();
+    startTimerHz(30);
+
+    DBG("Playback started");
+    repaint();
 }
 
 void MainComponent::stopPlayback()
@@ -662,27 +909,13 @@ void MainComponent::stopPlayback()
     if (isPlaying) {
         isPlaying = false;
         stopTimer();
-        stopAllNotes();
+        synthesizer->stopSequencer();
+        currentStep = -1;
+        patternEditor->setCurrentStep(-1);
         
         DBG("Playback stopped");
         repaint();
     }
-}
-
-void MainComponent::processCurrentStep()
-{
-    DBG("Processing step: " + juce::String(currentStep + 1) + "/32");
-    
-    // Play notes for current step
-    playNotesForStep(currentStep);
-    
-    // Play click track if enabled
-    if (clickTrackEnabled) {
-        playClickTrack(currentStep);
-    }
-    
-    // Update progression state
-    chordProgression->setCurrentStep(currentStep);
 }
 
 void MainComponent::updatePlayheadDisplay()
@@ -692,50 +925,18 @@ void MainComponent::updatePlayheadDisplay()
     repaint();
 }
 
-void MainComponent::calculateStepDuration()
-{
-    // 16th note duration in milliseconds
-    stepDurationMs = (60.0 / currentTempo / 4.0) * 1000.0;
-}
-
-void MainComponent::playNotesForStep(int step)
-{
-    // Get all blocks active at this step
-    auto activeBlocks = chordProgression->getBlocksAtStep(step);
-    
-    for (const auto& block : activeBlocks) {
-        if (chordProgression->isValidChordIndex(block.chordIndex)) {
-            const auto& baseChord = chordProgression->getChord(block.chordIndex);
-            auto effectiveChord = block.getEffectiveChordData(baseChord);
-            
-            DBG("Playing chord at step " + juce::String(step + 1) + ": " + effectiveChord.roman);
-
-            auto frequencies = MusicTheoryEngine::getChordFrequencies(
-                effectiveChord.roman, currentKey, currentMode, effectiveChord);
-
-            if (effectiveChord.hasArpeggiator()) {
-                synthesizer->playArpeggiatedChord(frequencies, effectiveChord.arpMode,
-                                                   effectiveChord.arpLength, currentTempo);
-            } else {
-                synthesizer->playChord(frequencies);
-            }
-        }
-    }
-}
-
 void MainComponent::stopAllNotes()
 {
     DBG("Stopping all notes");
     synthesizer->stopAllNotes();
 }
 
-void MainComponent::playClickTrack(int step)
+void MainComponent::refreshSequencerPattern()
 {
-    // Click on every step, accent on downbeats (every 4 steps)
-    bool isDownbeat = (step % 4) == 0;
-
-    synthesizer->playClick(isDownbeat);
-    DBG("Click " + juce::String(isDownbeat ? "(accent)" : ""));
+    // Pushes the current chords, blocks, key and mode to the audio engine. It takes over at the
+    // next step, and chords that did not change keep sounding.
+    synthesizer->setSequencerPattern(
+        SequencerPatternBuilder::build(*chordProgression, currentKey, currentMode));
 }
 
 void MainComponent::updateChordPanelState()
@@ -754,44 +955,338 @@ void MainComponent::updatePatternEditorState()
 {
     // Update pattern editor with current blocks
     patternEditor->setBlocks(chordProgression->getBlocks());
-    // Note: setChordCount method doesn't exist in PatternEditorComponent yet
+    patternEditor->setChordCount(chordProgression->getChordCount());
 }
 
-void MainComponent::validateState()
+void MainComponent::modelChanged()
 {
-    // Ensure all state is consistent
-    if (currentStep >= 32) {
-        currentStep = 0;
+    refreshSequencerPattern();
+    updateWindowTitle();
+    repaint();
+}
+
+//==============================================================================
+// Project files
+ProjectSettings MainComponent::getCurrentSettings() const
+{
+    ProjectSettings settings;
+    settings.tempo = currentTempo;
+    settings.key = currentKey;
+    settings.mode = currentMode;
+    settings.loop = loopEnabled;
+    settings.clickTrack = clickTrackEnabled;
+    settings.masterVolume = masterVolume;
+    return settings;
+}
+
+juce::String MainComponent::getCurrentSnapshot() const
+{
+    return ProjectFile::toXmlString(getCurrentSettings(), *chordProgression);
+}
+
+bool MainComponent::hasUnsavedChanges() const
+{
+    return getCurrentSnapshot() != savedSnapshot;
+}
+
+int MainComponent::getChordCountForCheck() const
+{
+    return chordProgression->getChordCount();
+}
+
+juce::String MainComponent::getProjectName() const
+{
+    return currentProjectFile == juce::File() ? juce::String("Untitled")
+                                              : currentProjectFile.getFileName();
+}
+
+void MainComponent::updateWindowTitle()
+{
+    if (auto* window = getTopLevelComponent())
+        if (window != this)
+            window->setName("Chord Foundry - " + getProjectName() + (hasUnsavedChanges() ? " *" : ""));
+}
+
+void MainComponent::applyProject(const ProjectSettings& settings)
+{
+    if (isPlaying)
+        stopPlayback();
+
+    currentTempo = juce::jlimit(40.0f, 240.0f, settings.tempo);
+    currentKey = settings.key;
+    currentMode = settings.mode;
+    loopEnabled = settings.loop;
+    clickTrackEnabled = settings.clickTrack;
+    masterVolume = settings.masterVolume;
+
+    synthesizer->setTempo(currentTempo);
+    synthesizer->setLoop(loopEnabled);
+    synthesizer->setSequencerClickEnabled(clickTrackEnabled);
+    synthesizer->setMasterGain(masterVolume);
+
+    settingsPanel->setTempo(currentTempo);
+    settingsPanel->setKey(currentKey);
+    settingsPanel->setMode(currentMode);
+    settingsPanel->setLoopEnabled(loopEnabled);
+    settingsPanel->setClickTrackEnabled(clickTrackEnabled);
+    settingsPanel->setVolume(masterVolume);
+    settingsPanel->setPlaybackState(false);
+
+    selectedRoman.clear();
+    updateChordPanelState();
+    updateStructurePanelState();
+    updatePatternEditorState();
+    patternEditor->setSelectedChordIndex(0);
+    patternEditor->setCurrentStep(-1);
+    refreshSequencerPattern();
+    repaint();
+}
+
+bool MainComponent::writeProjectFile(const juce::File& file)
+{
+    const auto result = ProjectFile::save(file, getCurrentSettings(), *chordProgression);
+
+    if (result.failed())
+    {
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
+                                               "Could not save the project",
+                                               result.getErrorMessage(), "OK", this);
+        return false;
     }
-    
-    if (currentTempo < 40.0f || currentTempo > 240.0f) {
-        currentTempo = 120.0f;
-        calculateStepDuration();
+
+    currentProjectFile = file;
+    savedSnapshot = getCurrentSnapshot();
+    updateWindowTitle();
+    return true;
+}
+
+bool MainComponent::openProjectFile(const juce::File& file)
+{
+    ProjectSettings settings;
+    ChordProgression loaded;
+    const auto result = ProjectFile::load(file, settings, loaded);
+
+    if (result.failed())
+    {
+        juce::AlertWindow::showMessageBoxAsync(juce::MessageBoxIconType::WarningIcon,
+                                               "Could not open the project",
+                                               result.getErrorMessage(), "OK", this);
+        return false;
+    }
+
+    chordProgression->fromValueTree(loaded.toValueTree());
+    applyProject(settings);
+
+    currentProjectFile = file;
+    savedSnapshot = getCurrentSnapshot();
+    updateWindowTitle();
+    return true;
+}
+
+void MainComponent::confirmDiscardChanges(std::function<void(bool)> proceed)
+{
+    if (! hasUnsavedChanges())
+    {
+        proceed(true);
+        return;
+    }
+
+    const auto options = juce::MessageBoxOptions()
+                             .withIconType(juce::MessageBoxIconType::QuestionIcon)
+                             .withTitle("Save changes?")
+                             .withMessage("\"" + getProjectName() + "\" has changes that have not been saved. "
+                                          "Save them before you continue?")
+                             .withButton("Save")
+                             .withButton("Don't Save")
+                             .withButton("Cancel")
+                             .withAssociatedComponent(this);
+
+    juce::AlertWindow::showAsync(options, [safe = juce::Component::SafePointer<MainComponent>(this), proceed](int result)
+    {
+        if (safe == nullptr)
+            return;
+
+        if (result == 1)
+            safe->saveProject([proceed](bool saved) { proceed(saved); });
+        else if (result == 2)
+            proceed(true);
+        else
+            proceed(false);
+    });
+}
+
+void MainComponent::newProject()
+{
+    confirmDiscardChanges([safe = juce::Component::SafePointer<MainComponent>(this)](bool proceed)
+    {
+        if (safe == nullptr || ! proceed)
+            return;
+
+        safe->chordProgression->clearChords();
+        safe->applyProject(ProjectSettings());
+        safe->currentProjectFile = juce::File();
+        safe->savedSnapshot = safe->getCurrentSnapshot();
+        safe->updateWindowTitle();
+    });
+}
+
+void MainComponent::openProject()
+{
+    confirmDiscardChanges([safe = juce::Component::SafePointer<MainComponent>(this)](bool proceed)
+    {
+        if (safe == nullptr || ! proceed)
+            return;
+
+        const auto start = safe->currentProjectFile != juce::File()
+                               ? safe->currentProjectFile.getParentDirectory()
+                               : juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
+
+        safe->fileChooser = std::make_unique<juce::FileChooser>("Open Project", start, ProjectFile::fileWildcard);
+
+        safe->fileChooser->launchAsync(juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                                       [safe](const juce::FileChooser& fc)
+        {
+            const auto file = fc.getResult();
+            if (safe != nullptr && file != juce::File())
+                safe->openProjectFile(file);
+        });
+    });
+}
+
+void MainComponent::saveProject(std::function<void(bool)> done)
+{
+    if (currentProjectFile == juce::File())
+    {
+        saveProjectAs(std::move(done));
+        return;
+    }
+
+    const bool ok = writeProjectFile(currentProjectFile);
+    if (done)
+        done(ok);
+}
+
+void MainComponent::saveProjectAs(std::function<void(bool)> done)
+{
+    const auto start = currentProjectFile != juce::File()
+                           ? currentProjectFile
+                           : juce::File::getSpecialLocation(juce::File::userDocumentsDirectory).getChildFile("Untitled" + juce::String(ProjectFile::fileExtension));
+
+    fileChooser = std::make_unique<juce::FileChooser>("Save Project", start, ProjectFile::fileWildcard);
+
+    fileChooser->launchAsync(juce::FileBrowserComponent::saveMode
+                                 | juce::FileBrowserComponent::canSelectFiles
+                                 | juce::FileBrowserComponent::warnAboutOverwriting,
+                             [safe = juce::Component::SafePointer<MainComponent>(this), done](const juce::FileChooser& fc)
+    {
+        auto file = fc.getResult();
+
+        if (safe == nullptr)
+            return;
+
+        if (file == juce::File())
+        {
+            if (done)
+                done(false);
+            return;
+        }
+
+        if (file.getFileExtension().isEmpty())
+            file = file.withFileExtension(ProjectFile::fileExtension);
+
+        const bool ok = safe->writeProjectFile(file);
+        if (done)
+            done(ok);
+    });
+}
+
+//==============================================================================
+// Menu bar and commands
+juce::StringArray MainComponent::getMenuBarNames()
+{
+    return { "File", "Audio" };
+}
+
+juce::PopupMenu MainComponent::getMenuForIndex(int menuIndex, const juce::String&)
+{
+    juce::PopupMenu menu;
+
+    if (menuIndex == 0)
+    {
+        menu.addCommandItem(&commandManager, cmdNewProject);
+        menu.addCommandItem(&commandManager, cmdOpenProject);
+        menu.addSeparator();
+        menu.addCommandItem(&commandManager, cmdSaveProject);
+        menu.addCommandItem(&commandManager, cmdSaveProjectAs);
+        menu.addSeparator();
+        menu.addCommandItem(&commandManager, cmdExportMidi);
+    }
+    else if (menuIndex == 1)
+    {
+        menu.addCommandItem(&commandManager, cmdAudioSettings);
+    }
+
+    return menu;
+}
+
+void MainComponent::menuItemSelected(int, int) {}
+
+void MainComponent::getAllCommands(juce::Array<juce::CommandID>& commands)
+{
+    commands.addArray({ cmdNewProject, cmdOpenProject, cmdSaveProject, cmdSaveProjectAs,
+                        cmdExportMidi, cmdAudioSettings });
+}
+
+void MainComponent::getCommandInfo(juce::CommandID commandID, juce::ApplicationCommandInfo& result)
+{
+    const auto cmd = juce::ModifierKeys::commandModifier;
+    const auto cmdShift = juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier;
+
+    switch (commandID)
+    {
+        case cmdNewProject:
+            result.setInfo("New Project", "Start a new, empty project", "File", 0);
+            result.addDefaultKeypress('n', cmd);
+            break;
+        case cmdOpenProject:
+            result.setInfo("Open Project...", "Open a saved project", "File", 0);
+            result.addDefaultKeypress('o', cmd);
+            break;
+        case cmdSaveProject:
+            result.setInfo("Save Project", "Save the project", "File", 0);
+            result.addDefaultKeypress('s', cmd);
+            break;
+        case cmdSaveProjectAs:
+            result.setInfo("Save Project As...", "Save the project under a new name", "File", 0);
+            result.addDefaultKeypress('s', cmdShift);
+            break;
+        case cmdExportMidi:
+            result.setInfo("Export MIDI...", "Export the pattern as a MIDI file", "File", 0);
+            result.addDefaultKeypress('e', cmd);
+            break;
+        case cmdAudioSettings:
+            result.setInfo("Audio Settings...", "Choose the audio output device", "Audio", 0);
+            result.addDefaultKeypress(',', cmd);
+            break;
+        default:
+            break;
     }
 }
 
-bool MainComponent::saveProject(const juce::File& file)
+bool MainComponent::perform(const InvocationInfo& info)
 {
-    // TODO: Implement project save
-    DBG("Saving project to: " + file.getFullPathName());
+    switch (info.commandID)
+    {
+        case cmdNewProject:     newProject(); return true;
+        case cmdOpenProject:    openProject(); return true;
+        case cmdSaveProject:    saveProject(); return true;
+        case cmdSaveProjectAs:  saveProjectAs(); return true;
+        case cmdExportMidi:     onExportMidi(); return true;
+        case cmdAudioSettings:  showAudioSettings(); return true;
+        default:                break;
+    }
+
     return false;
-}
-
-bool MainComponent::loadProject(const juce::File& file)
-{
-    // TODO: Implement project load
-    DBG("Loading project from: " + file.getFullPathName());
-    return false;
-}
-
-void MainComponent::showSaveDialog()
-{
-    // TODO: Implement save dialog
-}
-
-void MainComponent::showLoadDialog()
-{
-    // TODO: Implement load dialog
 }
 
 } // namespace ChordFoundry

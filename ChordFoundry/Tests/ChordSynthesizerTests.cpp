@@ -146,6 +146,23 @@ public:
             const double burstLengthMs = (lastLoudSample + 1) * 1000.0 / testSampleRate;
             expect(burstLengthMs < 20.0, "expected the click burst to be shorter than 20ms");
         }
+
+        beginTest("a device that failed to open is described in words the user can act on");
+        {
+            const auto none = ChordSynthesizer::describeDeviceProblem({}, true, true);
+            expect(none.isEmpty(), "a working device needs no message");
+
+            const auto withError = ChordSynthesizer::describeDeviceProblem("No such device", false, false);
+            expect(withError.containsIgnoreCase("could not open"), "says what happened");
+            expect(withError.contains("No such device"), "includes the system's own reason");
+            expect(withError.contains("Audio Settings"), "points to the way out");
+
+            const auto noError = ChordSynthesizer::describeDeviceProblem({}, false, false);
+            expect(noError.containsIgnoreCase("no output device"), "no device at all");
+
+            const auto noChannels = ChordSynthesizer::describeDeviceProblem({}, true, false);
+            expect(noChannels.containsIgnoreCase("no output channels"), "device without outputs");
+        }
     }
 };
 

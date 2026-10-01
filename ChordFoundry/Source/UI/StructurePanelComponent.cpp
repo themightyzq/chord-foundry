@@ -98,8 +98,8 @@ void StructurePanelComponent::paint(juce::Graphics& g)
     if (chords.empty())
     {
         auto bounds = getLocalBounds().reduced(ModernLookAndFeel::Metrics::spacingLG);
-        bounds.removeFromTop(60); // Header space
-        bounds.removeFromBottom(60); // Button space
+        bounds.removeFromTop(getHeaderHeight()); // Header space
+        bounds.removeFromBottom(ModernLookAndFeel::Metrics::buttonHeight + ModernLookAndFeel::Metrics::spacingSM); // Button space
         
         g.setColour(ModernLookAndFeel::Colors::textSecondary);
         g.setFont(ModernLookAndFeel::Typography::getBodyFont());
@@ -115,7 +115,7 @@ void StructurePanelComponent::paint(juce::Graphics& g)
     // Draw progression analysis if chords exist
     else if (chords.size() > 1)
     {
-        auto analysisBounds = getLocalBounds().removeFromBottom(40).reduced(ModernLookAndFeel::Metrics::spacingMD);
+        auto analysisBounds = getAnalysisBounds();
         
         g.setColour(ModernLookAndFeel::Colors::textSecondary);
         g.setFont(ModernLookAndFeel::Typography::getCaptionFont());
@@ -130,12 +130,17 @@ void StructurePanelComponent::resized()
     auto bounds = getLocalBounds().reduced(ModernLookAndFeel::Metrics::spacingMD);
     
     // Header area
-    auto headerBounds = bounds.removeFromTop(60);
+    auto headerBounds = bounds.removeFromTop(getHeaderHeight());
     if (headerLabel)
         headerLabel->setBounds(headerBounds);
     
     // Button area at bottom
-    auto buttonArea = bounds.removeFromBottom(ModernLookAndFeel::Metrics::buttonHeight + ModernLookAndFeel::Metrics::spacingMD);
+    auto buttonArea = bounds.removeFromBottom(ModernLookAndFeel::Metrics::buttonHeight);
+    bounds.removeFromBottom(ModernLookAndFeel::Metrics::spacingSM);
+
+    // Progression analysis text sits in its own strip above the buttons (it used to be drawn
+    // underneath them).
+    bounds.removeFromBottom(24);
     auto buttonWidth = (buttonArea.getWidth() - (ModernLookAndFeel::Metrics::spacingSM * 2)) / 3;
     
     if (clearButton)
@@ -159,6 +164,18 @@ void StructurePanelComponent::resized()
         chordViewport->setBounds(bounds);
         updateChordButtonLayout();
     }
+}
+
+int StructurePanelComponent::getHeaderHeight() const
+{
+    return getHeight() < 460 ? 36 : 60;
+}
+
+juce::Rectangle<int> StructurePanelComponent::getAnalysisBounds() const
+{
+    auto bounds = getLocalBounds().reduced(ModernLookAndFeel::Metrics::spacingMD);
+    bounds.removeFromBottom(ModernLookAndFeel::Metrics::buttonHeight + ModernLookAndFeel::Metrics::spacingSM);
+    return bounds.removeFromBottom(24);
 }
 
 //==============================================================================
@@ -285,6 +302,7 @@ void StructurePanelComponent::setupUI()
     clearButton->setColour(juce::TextButton::buttonOnColourId, ModernLookAndFeel::Colors::error);
     clearButton->setAccessible(true);
     clearButton->setTitle("Clear all chords from progression");
+    clearButton->setTooltip("Remove every chord and every pattern block");
     addAndMakeVisible(*clearButton);
     
     // Randomize button
@@ -293,6 +311,7 @@ void StructurePanelComponent::setupUI()
     randomizeButton->setColour(juce::TextButton::buttonOnColourId, ModernLookAndFeel::Colors::secondary);
     randomizeButton->setAccessible(true);
     randomizeButton->setTitle("Generate random chord progression");
+    randomizeButton->setTooltip("Shuffle the order of the chords in the progression");
     addAndMakeVisible(*randomizeButton);
     
     // Export button
@@ -301,6 +320,7 @@ void StructurePanelComponent::setupUI()
     exportButton->setColour(juce::TextButton::buttonOnColourId, ModernLookAndFeel::Colors::info);
     exportButton->setAccessible(true);
     exportButton->setTitle("Export progression to MIDI or other formats");
+    exportButton->setTooltip("Export the pattern as a MIDI file (Cmd/Ctrl+E)");
     addAndMakeVisible(*exportButton);
     
     // Chord viewport and container
@@ -335,8 +355,11 @@ void StructurePanelComponent::updateChordButtonLayout()
     if (!chordContainer || chordButtons.empty())
         return;
     
-    auto viewportBounds = chordViewport->getViewArea();
-    auto availableWidth = viewportBounds.getWidth();
+    // Size from the viewport itself. getViewArea() reports the size of the viewed component,
+    // which is 0 x 0 until it has been given a size, so the buttons used to be laid out in a
+    // zero-width container and never appeared.
+    auto availableWidth = chordViewport->getMaximumVisibleWidth();
+    auto availableHeight = chordViewport->getMaximumVisibleHeight();
     
     // Calculate buttons per row based on available width
     auto buttonsPerRow = juce::jmax(1, availableWidth / (CHORD_BUTTON_WIDTH + ModernLookAndFeel::Metrics::spacingSM));
@@ -344,7 +367,7 @@ void StructurePanelComponent::updateChordButtonLayout()
     
     // Set container size
     auto containerHeight = rows * (CHORD_BUTTON_HEIGHT + ModernLookAndFeel::Metrics::spacingSM) - ModernLookAndFeel::Metrics::spacingSM;
-    chordContainer->setSize(availableWidth, juce::jmax(containerHeight, viewportBounds.getHeight()));
+    chordContainer->setSize(availableWidth, juce::jmax(containerHeight, availableHeight));
     
     // Position buttons
     for (size_t i = 0; i < chordButtons.size(); ++i)

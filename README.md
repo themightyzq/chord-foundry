@@ -31,6 +31,32 @@ Open the first time. Or build from source (below).
 6. Export to MIDI. The file contains the full pattern, with arpeggios written out as
    individual notes.
 
+## Projects
+
+New, Open, Save and Save As are in the File menu and the buttons at the top left of the
+window (Cmd or Ctrl plus N, O, S, and Shift+S). A project file (`.cfproj`, XML) holds the
+chords with their modifiers and arpeggiator settings, the pattern blocks, the tempo, key,
+mode, loop and click-track settings, and the synth volume. Saving writes a temporary file
+first and then swaps it in, so a failed save does not damage an existing project. The window
+title shows an asterisk when there are unsaved changes, and Chord Foundry asks before you
+quit, open another project or start a new one with unsaved changes. A project saved by a
+newer version of the app is refused with a message rather than half loaded.
+
+## Playback
+
+Playback counts steps in samples on the audio thread, so steps land at the set tempo without
+drifting. One step is a 16th note. A chord that sits on consecutive steps is struck once and
+held, and an arpeggio keeps its place across those steps; it is struck again when the chord
+changes. To strike the same chord again at the start of a block, Shift-click the first step
+of that block (a small marker shows on it).
+
+If no audio output device can be opened, a message says so and offers Audio Settings, where
+you can choose the output device, sample rate and buffer size. The same dialog is in the Audio
+menu and behind the Audio Settings button.
+
+The window can be as small as 1200 x 760. Below the size the layout needs, it scrolls instead
+of clipping.
+
 ## Build from source
 
 Requirements: CMake 3.22 or newer and a C++17 compiler (Xcode command-line tools on macOS,

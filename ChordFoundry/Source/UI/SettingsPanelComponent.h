@@ -40,6 +40,7 @@ public:
     void setMode(const juce::String& mode);
     void setLoopEnabled(bool enabled);
     void setClickTrackEnabled(bool enabled);
+    void setVolume(float volume);
     
     // Callbacks
     std::function<void(bool)> onPlaybackStateChanged;
@@ -48,9 +49,14 @@ public:
     std::function<void(const juce::String&)> onModeChanged;
     std::function<void(bool)> onLoopChanged;
     std::function<void(bool)> onClickTrackChanged;
+    std::function<void(float)> onVolumeChanged;
     
 private:
     //==============================================================================
+    // The sections sit in a viewport so a short panel scrolls instead of clipping.
+    juce::Viewport viewport;
+    juce::Component content;
+
     // UI Components
     
     // Playback section
@@ -96,6 +102,10 @@ private:
     void setupMusicalSection();
     void setupAudioSection();
     void setupShortcutsSection();
+    void setupTooltips();
+
+    // Lays the sections out for the given width and returns the height they need.
+    int layoutContent(int width);
     
     void updatePlaybackButtons();
     void updateTempoDisplay();

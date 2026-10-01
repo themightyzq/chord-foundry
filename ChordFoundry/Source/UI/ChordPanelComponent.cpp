@@ -1,4 +1,5 @@
 #include "ChordPanelComponent.h"
+#include "../MusicTheory/MusicTheoryEngine.h"
 #include <cmath>
 
 namespace ChordFoundry {
@@ -22,12 +23,13 @@ void ChordPanelComponent::paint(juce::Graphics& g)
     ModernLookAndFeel::drawCard(g, getLocalBounds(), true);
     
     // Calculate wheel bounds
-    auto wheelBounds = getLocalBounds().withSizeKeepingCentre(WHEEL_SIZE, WHEEL_SIZE)
-                                      .translated(0, -20); // Offset for header
+    auto wheelBounds = getWheelBounds();
     auto center = wheelBounds.getCentre().toFloat();
     
-    float outerRadius = WHEEL_SIZE * 0.5f;
-    float innerRadius = CENTER_CIRCLE_SIZE * 0.5f;
+    const float scale = getWheelScale();
+    const int centerCircleSize = juce::roundToInt(CENTER_CIRCLE_SIZE * scale);
+    float outerRadius = wheelBounds.getWidth() * 0.5f;
+    float innerRadius = centerCircleSize * 0.5f;
     
     // Draw dark background circle to ensure clean rendering
     g.setColour(ModernLookAndFeel::Colors::background);
@@ -47,12 +49,12 @@ void ChordPanelComponent::paint(juce::Graphics& g)
     }
     
     // Draw center circle with gradient for depth
-    auto centerBounds = wheelBounds.withSizeKeepingCentre(CENTER_CIRCLE_SIZE, CENTER_CIRCLE_SIZE);
+    auto centerBounds = wheelBounds.withSizeKeepingCentre(centerCircleSize, centerCircleSize);
     
     juce::ColourGradient centerGradient(
         ModernLookAndFeel::Colors::surfaceElevated.brighter(0.1f), center,
         ModernLookAndFeel::Colors::surfaceElevated.darker(0.1f), 
-        center.translated(CENTER_CIRCLE_SIZE * 0.3f, CENTER_CIRCLE_SIZE * 0.3f), true);
+        center.translated(centerCircleSize * 0.3f, centerCircleSize * 0.3f), true);
     
     g.setGradientFill(centerGradient);
     g.fillEllipse(centerBounds.toFloat());
@@ -66,7 +68,7 @@ void ChordPanelComponent::paint(juce::Graphics& g)
     {
         // Use display font for the main chord symbol
         g.setColour(ModernLookAndFeel::Colors::primary.brighter(0.2f));
-        g.setFont(ModernLookAndFeel::Typography::getDisplayFont().withHeight(36.0f));
+        g.setFont(ModernLookAndFeel::Typography::getDisplayFont().withHeight(36.0f * scale));
         
         auto chordBounds = centerBounds.reduced(0, 10);
         g.drawText(selectedRoman, chordBounds, juce::Justification::centred);
@@ -86,7 +88,7 @@ void ChordPanelComponent::paint(juce::Graphics& g)
         // Placeholder text with modern styling
         g.setColour(ModernLookAndFeel::Colors::textSecondary.withAlpha(0.6f));
         g.setFont(ModernLookAndFeel::Typography::getCaptionFont());
-        g.drawText("SELECT CHORD", centerBounds, juce::Justification::centred);
+        g.drawFittedText("SELECT\nCHORD", centerBounds.reduced(8), juce::Justification::centred, 2);
     }
 }
 
@@ -95,12 +97,12 @@ void ChordPanelComponent::resized()
     auto bounds = getLocalBounds().reduced(ModernLookAndFeel::Metrics::spacingMD);
     
     // Header area
-    auto headerBounds = bounds.removeFromTop(60);
+    auto headerBounds = bounds.removeFromTop(getHeaderHeight());
     if (headerLabel)
         headerLabel->setBounds(headerBounds);
     
     // Button area at bottom
-    auto buttonArea = bounds.removeFromBottom(ModernLookAndFeel::Metrics::buttonHeight + ModernLookAndFeel::Metrics::spacingMD);
+    auto buttonArea = bounds.removeFromBottom(ModernLookAndFeel::Metrics::buttonHeight);
     auto buttonWidth = (buttonArea.getWidth() - ModernLookAndFeel::Metrics::spacingSM) / 2;
     
     if (addButton)
@@ -158,7 +160,7 @@ void ChordPanelComponent::setupChordData()
         {"IV",   "Major",          ModernLookAndFeel::Colors::primary.darker(0.1f),     true},
         {"V",    "Major",          ModernLookAndFeel::Colors::primary,                  true},
         {"vi",   "Minor",          ModernLookAndFeel::Colors::secondary,                false},
-        {"vii°", "Diminished",     ModernLookAndFeel::Colors::accent.darker(0.2f),      false}
+        {diminishedRoman(), "Diminished",     ModernLookAndFeel::Colors::accent.darker(0.2f),      false}
     };
 }
 
@@ -174,6 +176,7 @@ void ChordPanelComponent::setupUI()
     // No longer creating individual chord buttons - using pie slices instead
     // Enable mouse hover for pie slices
     setMouseCursor(juce::MouseCursor::PointingHandCursor);
+    setTooltip("Click a slice to pick a scale degree, then press Add Chord");
     
     // Add chord button
     addButton = std::make_unique<juce::TextButton>("Add Chord");
@@ -181,6 +184,7 @@ void ChordPanelComponent::setupUI()
     addButton->setEnabled(false); // Enabled when chord is selected
     addButton->setAccessible(true);
     addButton->setTitle("Add selected chord to progression");
+    addButton->setTooltip("Add the selected chord to the progression (up to 8 chords)");
     addAndMakeVisible(*addButton);
     
     // Randomize button
@@ -188,6 +192,7 @@ void ChordPanelComponent::setupUI()
     randomizeButton->addListener(this);
     randomizeButton->setAccessible(true);
     randomizeButton->setTitle("Select a random chord");
+    randomizeButton->setTooltip("Select a random scale degree on the wheel");
     addAndMakeVisible(*randomizeButton);
 }
 
@@ -340,16 +345,35 @@ juce::Path ChordPanelComponent::createPieSlicePath(float startAngle, float endAn
     return path;
 }
 
+int ChordPanelComponent::getHeaderHeight() const
+{
+    return getHeight() < 460 ? 36 : 60;
+}
+
+juce::Rectangle<int> ChordPanelComponent::getWheelBounds() const
+{
+    auto area = getLocalBounds().reduced(ModernLookAndFeel::Metrics::spacingMD);
+    area.removeFromTop(getHeaderHeight());
+    area.removeFromBottom(ModernLookAndFeel::Metrics::buttonHeight + ModernLookAndFeel::Metrics::spacingSM);
+
+    const int size = juce::jlimit(120, WHEEL_SIZE, juce::jmin(area.getWidth(), area.getHeight()));
+    return juce::Rectangle<int>(size, size).withCentre(area.getCentre());
+}
+
+float ChordPanelComponent::getWheelScale() const
+{
+    return static_cast<float>(getWheelBounds().getWidth()) / static_cast<float>(WHEEL_SIZE);
+}
+
 int ChordPanelComponent::getSliceIndexAt(const juce::Point<int>& point) const
 {
-    auto wheelBounds = getLocalBounds().withSizeKeepingCentre(WHEEL_SIZE, WHEEL_SIZE)
-                                      .translated(0, -20);
+    auto wheelBounds = getWheelBounds();
     auto center = wheelBounds.getCentre();
     
     // Check if point is within wheel
     auto distance = point.getDistanceFrom(center);
-    float innerRadius = CENTER_CIRCLE_SIZE * 0.5f;
-    float outerRadius = WHEEL_SIZE * 0.5f;
+    float innerRadius = CENTER_CIRCLE_SIZE * 0.5f * getWheelScale();
+    float outerRadius = wheelBounds.getWidth() * 0.5f;
     
     if (distance < innerRadius || distance > outerRadius)
         return -1;
