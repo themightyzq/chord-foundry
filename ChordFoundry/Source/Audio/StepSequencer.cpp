@@ -1,5 +1,6 @@
 #include "StepSequencer.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 
@@ -304,11 +305,11 @@ int StepSequencer::process (int numSamples) noexcept
 
         if (numEvents + worstCaseEventsPerStep > maxEvents)
         {
-            consumed = static_cast<int> (juce::jlimit<std::int64_t> (0, numSamples, position - chunkStart));
+            consumed = static_cast<int> (std::clamp<std::int64_t> (position - chunkStart, 0, numSamples));
             break;
         }
 
-        const int offset = static_cast<int> (juce::jmax<std::int64_t> (0, position - chunkStart));
+        const int offset = static_cast<int> (std::max<std::int64_t> (0, position - chunkStart));
         fireStep (nextStep, offset);
 
         if (! playing)

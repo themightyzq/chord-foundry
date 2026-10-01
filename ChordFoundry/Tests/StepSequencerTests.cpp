@@ -4,6 +4,7 @@
 #include <juce_core/juce_core.h>
 #include <juce_audio_basics/juce_audio_basics.h>
 
+#include <algorithm>
 #include <cmath>
 #include <initializer_list>
 #include <vector>
@@ -53,7 +54,7 @@ std::vector<Recorded> run(StepSequencer& seq, juce::int64 totalSamples, int bloc
 
     while (blockStart < startPosition + totalSamples)
     {
-        const int want = static_cast<int>(juce::jmin<juce::int64>(blockSize, startPosition + totalSamples - blockStart));
+        const int want = static_cast<int>(std::min<juce::int64>(blockSize, startPosition + totalSamples - blockStart));
         int done = 0;
 
         while (done < want)

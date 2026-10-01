@@ -180,13 +180,13 @@ private:
                 const auto b = editor.getStepBounds(step);
                 return juce::Point<int>(b.getRight() - 3, b.getCentreY());
             };
-            const auto drag = [&](juce::Point<int> from, juce::Point<int> to, int modifiers = left)
+            const auto drag = [&](juce::Point<int> from, juce::Point<int> to, int modifiers = juce::ModifierKeys::leftButtonModifier)
             {
                 editor.mouseDown(event(from, modifiers, false));
                 editor.mouseDrag(event(to, modifiers, true));
                 editor.mouseUp(event(to, modifiers, true));
             };
-            const auto click = [&](juce::Point<int> at, int modifiers = left)
+            const auto click = [&](juce::Point<int> at, int modifiers = juce::ModifierKeys::leftButtonModifier)
             {
                 editor.mouseDown(event(at, modifiers, false));
                 editor.mouseUp(event(at, modifiers, false));
