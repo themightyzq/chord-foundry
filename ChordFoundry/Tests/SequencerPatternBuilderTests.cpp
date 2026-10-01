@@ -125,6 +125,77 @@ public:
             expect(MusicTheoryEngine::getChordMidiNotes(name, "C", "Major", ChordData(name)).size() >= 3);
         }
 
+        beginTest("a Random arpeggio keeps its order when other blocks are edited");
+        {
+            ChordData random("I");
+            random.extension = "+7th";
+            random.arpMode = "Random";
+            random.arpLength = "1/16";
+            const std::vector<ChordData> withRandom { random, ChordData("V"), ChordData("IV") };
+
+            const auto base = SequencerPatternBuilder::build(withRandom, { makeBlock(0, 0, 8) }, "C", "Major");
+            const auto& reference = base.steps[0].slots[0];
+            expect(reference.arpSteps == 1 && reference.numNotes >= 4);
+
+            // Unrelated edits: other blocks added, moved and removed, a longer block, repeated rebuilds.
+            const std::vector<std::vector<BlockData>> edits {
+                { makeBlock(0, 0, 8), makeBlock(1, 12, 4) },
+                { makeBlock(0, 0, 8), makeBlock(1, 12, 4), makeBlock(2, 20, 6) },
+                { makeBlock(0, 0, 8), makeBlock(2, 9, 2) },
+                { makeBlock(0, 0, 12), makeBlock(1, 16, 8) },
+            };
+
+            for (int round = 0; round < 6; ++round)
+                for (const auto& blocks : edits)
+                {
+                    const auto rebuilt = SequencerPatternBuilder::build(withRandom, blocks, "C", "Major");
+                    expect(rebuilt.steps[0].slots[0].sameVoicing(reference), "same order after an unrelated edit");
+                    expect(rebuilt.steps[7].slots[0].sameVoicing(reference), "same order on every step of the block");
+                }
+        }
+
+        beginTest("replacing the pattern during playback does not re-strike a Random arpeggio");
+        {
+            ChordData random("I");
+            random.extension = "+7th";
+            random.arpMode = "Random";
+            random.arpLength = "1/16";
+            const std::vector<ChordData> chordsR { random, ChordData("V") };
+
+            StepSequencer seq;
+            seq.prepare(48000.0);
+            seq.setTempo(120.0f);
+            seq.setLoop(false);
+            seq.setPattern(SequencerPatternBuilder::build(chordsR, { makeBlock(0, 0, 12) }, "C", "Major"));
+            seq.startNow();
+
+            std::vector<int> played;
+            juce::int64 blockStart = 0;
+            for (int block = 0; block < 12 * 6000 / 500; ++block)
+            {
+                if (blockStart >= 5 * 6000 && blockStart < 5 * 6000 + 500)   // an edit elsewhere, mid-block
+                    seq.setPattern(SequencerPatternBuilder::build(chordsR, { makeBlock(0, 0, 12), makeBlock(1, 20, 4) }, "C", "Major"));
+
+                int done = 0;
+                while (done < 500)
+                {
+                    const int consumed = seq.process(500 - done);
+                    for (int i = 0; i < seq.getNumEvents(); ++i)
+                        if (seq.getEvents()[i].type == StepSequencer::Event::Type::noteOn)
+                            played.push_back(seq.getEvents()[i].note);
+                    done += consumed;
+                }
+                blockStart += 500;
+            }
+
+            // One note per step for 12 steps, following the same cyclic order throughout.
+            expectEquals(static_cast<int>(played.size()), 12);
+            bool cyclic = played.size() == 12;
+            for (size_t i = 4; cyclic && i < played.size(); ++i)
+                cyclic = played[i] == played[i - 4];
+            expect(cyclic, "the arpeggio continued its cycle across the edit");
+        }
+
         beginTest("blocks pointing at a missing chord are skipped");
         {
             const auto pattern = SequencerPatternBuilder::build(chords, { makeBlock(5, 0, 2), makeBlock(-1, 2, 2) },

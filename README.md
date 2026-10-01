@@ -22,12 +22,18 @@ Open the first time. Or build from source (below).
    Dorian, Phrygian, Lydian, and so on), in all twelve keys.
 2. Click a slice of the chord wheel to pick a scale degree. Slices are coloured by
    function (primary, secondary, diminished).
-3. Set the chord's extension (6th, 7th, 9th, sus2, sus4) and voicing (close, open,
-   drop 2, spread) with the modifier controls.
-4. Drag on the pattern grid to place the chord as a block. Blocks can be moved, resized,
-   and given their own modifiers that override the global ones. The grid is 32 steps.
-5. Optionally pick an arpeggio mode per block: Up, Down, Random, Converge, Diverge,
-   Ascending, or Descending, with a note length of 1/16, 1/8, 1/4 or 1/2 at the set tempo.
+3. Press Add Chord to put the chord in the progression. Select a chord in the progression
+   and press Modifiers... (or double-click or right-click the chord) to set its extension
+   (+6th, +7th, +9th, sus2, sus4), inversion (root, 1st, 2nd), voicing (root, open, drop 2,
+   custom) and arpeggiator. Preview plays the chord with the settings before you apply them.
+4. Pick a chord in the progression, then drag across empty steps on the pattern grid to draw
+   a block of that chord. Drag a block to move it, drag the right edge of its last step to
+   resize it, click it or right-click it to remove it. Blocks of the same chord cannot
+   overlap; blocks of different chords can, and then sound together. The grid is 32 steps.
+5. Optionally pick an arpeggio mode for a chord in the Modifiers dialog: Up, Down, Random,
+   Converge, Diverge, Ascending, or Descending, with a note length of 1/16, 1/8, 1/4 or 1/2
+   at the set tempo. A Random arpeggio keeps the same order for a given block until that
+   block's chord or position changes, and the exported MIDI file uses the same order.
 6. Export to MIDI. The file contains the full pattern, with arpeggios written out as
    individual notes.
 

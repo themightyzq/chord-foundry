@@ -1,107 +1,58 @@
 #pragma once
 
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <functional>
 #include "../Data/ChordProgression.h"
 #include "ModernLookAndFeel.h"
 
 namespace ChordFoundry {
 
 /**
- * ChordModifierDialog - Modern dialog for editing chord properties
- * 
- * Features:
- * - Extension selection (7, 9, 11, add9, sus2, sus4, etc.)
- * - Inversion options (root, 1st, 2nd, 3rd)
- * - Voicing selection (close, open, drop2, drop3, custom)
- * - Arpeggiator settings (mode, length, speed)
- * - Custom voicing editor (note count, position, spread)
+ * ChordModifierDialog - dialog for editing one chord's modifiers.
+ *
+ * Offers exactly the values the music-theory engine and arpeggiator understand
+ * (MusicTheoryEngine::EXTENSION_NAMES, INVERSION_NAMES, VOICING_NAMES, ARP_MODE_NAMES,
+ * ARP_LENGTH_NAMES, SPREAD_TYPE_NAMES), so every choice changes the sound:
+ * - Extension (+6th, +7th, +9th, sus2, sus4)
+ * - Inversion (root, 1st, 2nd)
+ * - Voicing (root, open, drop 2, custom)
+ * - Arpeggiator (mode and note length)
+ * - Custom voicing (note count, octave, spread type), shown when the voicing is Custom
+ *
+ * It does not change the chord itself: Apply hands the edited copy to onApply and the
+ * owner puts it into the progression. Cancel, Escape and the close button discard.
+ * Show it with launch(); it deletes itself when dismissed.
  */
-class ChordModifierDialog : public juce::DialogWindow,
-                           public juce::Button::Listener,
-                           public juce::ComboBox::Listener,
-                           public juce::Slider::Listener
+class ChordModifierDialog : public juce::DialogWindow
 {
 public:
-    ChordModifierDialog(const ChordData& chord);
-    ~ChordModifierDialog() override = default;
-    
-    ChordData getModifiedChord() const { return modifiedChord; }
-    
-    // Component overrides
-    void buttonClicked(juce::Button* button) override;
-    void comboBoxChanged(juce::ComboBox* comboBox) override;
-    void sliderValueChanged(juce::Slider* slider) override;
-    
-    // Callback for changes
-    std::function<void()> onPreviewChord;
-    
+    explicit ChordModifierDialog(const ChordData& chord);
+    ~ChordModifierDialog() override;
+
+    // Called with the edited chord when Apply is pressed, before the dialog closes.
+    std::function<void(const ChordData&)> onApply;
+
+    // Called with the chord as currently edited when Preview is pressed.
+    std::function<void(const ChordData&)> onPreview;
+
+    // Called once when the dialog closes, whether applied or cancelled.
+    std::function<void()> onClosed;
+
+    // Shows the dialog modally and positions it over `centreAround` (may be null).
+    void launch(juce::Component* centreAround);
+
+    void closeButtonPressed() override;
+
+    ChordData getEditedChord() const;
+
 private:
-    void updateChordFromUI();
-    //==============================================================================
-    // Content component for the dialog
-    class ContentComponent : public juce::Component
-    {
-    public:
-        ContentComponent(ChordData& chordData, ChordModifierDialog& parent);
-        void paint(juce::Graphics& g) override;
-        void resized() override;
-        
-    private:
-        ChordData& modifiedChord;
-        ChordModifierDialog& parentDialog;
-        
-        // UI sections
-        std::unique_ptr<juce::GroupComponent> extensionGroup;
-        std::unique_ptr<juce::GroupComponent> inversionGroup;
-        std::unique_ptr<juce::GroupComponent> voicingGroup;
-        std::unique_ptr<juce::GroupComponent> arpeggiatorGroup;
-        std::unique_ptr<juce::GroupComponent> customVoicingGroup;
-        
-        // Extension controls
-        std::unique_ptr<juce::ComboBox> extensionCombo;
-        
-        // Inversion controls
-        std::unique_ptr<juce::ComboBox> inversionCombo;
-        
-        // Voicing controls
-        std::unique_ptr<juce::ComboBox> voicingCombo;
-        
-        // Arpeggiator controls
-        std::unique_ptr<juce::ComboBox> arpModeCombo;
-        std::unique_ptr<juce::ComboBox> arpLengthCombo;
-        
-        // Custom voicing controls
-        std::unique_ptr<juce::Slider> noteCountSlider;
-        std::unique_ptr<juce::Label> noteCountLabel;
-        std::unique_ptr<juce::Slider> positionSlider;
-        std::unique_ptr<juce::Label> positionLabel;
-        std::unique_ptr<juce::Slider> spreadSlider;
-        std::unique_ptr<juce::Label> spreadLabel;
-        
-        // Action buttons
-        std::unique_ptr<juce::TextButton> previewButton;
-        std::unique_ptr<juce::TextButton> okButton;
-        std::unique_ptr<juce::TextButton> cancelButton;
-        
-        void setupExtensionSection();
-        void setupInversionSection();
-        void setupVoicingSection();
-        void setupArpeggiatorSection();
-        void setupCustomVoicingSection();
-        void setupActionButtons();
-        void updateCustomVoicingVisibility();
-        
-        // Friend class for access to UI controls
-        friend class ChordModifierDialog;
-        
-        JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ContentComponent)
-    };
-    
-    //==============================================================================
-    ChordData modifiedChord;
-    std::unique_ptr<ContentComponent> contentComponent;
-    std::unique_ptr<ModernLookAndFeel> modernLookAndFeel;
-    
+    class Content;
+    void finish(bool apply);
+
+    ModernLookAndFeel lookAndFeel;
+    Content* content = nullptr;   // owned by the window
+    bool finished = false;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ChordModifierDialog)
 };
 

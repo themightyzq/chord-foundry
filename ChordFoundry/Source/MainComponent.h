@@ -17,6 +17,7 @@ class StructurePanelComponent;
 class PatternEditorComponent;
 class ChordSynthesizer;
 class MusicTheoryEngine;
+class ChordModifierDialog;
 
 //==============================================================================
 /*
@@ -66,7 +67,8 @@ public:
     // Project files
     bool hasUnsavedChanges() const;
     juce::File getCurrentProjectFile() const { return currentProjectFile; }
-    int getChordCountForCheck() const;   // for the --project-selfcheck developer mode
+    int getChordCountForCheck() const;
+    ChordData getChordForCheck(int index) const;   // for the --project-selfcheck developer mode
 
     // Asks to save if there are unsaved changes, then calls proceed(true) to carry on or
     // proceed(false) if the user cancelled (or a save failed). Calls proceed(true)
@@ -109,6 +111,7 @@ public:
     void onChordAdded();
     void onChordRemoved(int index);
     void onChordModified(int index, const ChordData& newData);
+    void showChordModifiers(int index);
     void onClearAllChords();
     void onRandomizeChords();
 
@@ -177,6 +180,7 @@ private:
     // File chooser for export / open / save
     std::unique_ptr<juce::FileChooser> fileChooser;
     juce::Component::SafePointer<juce::DialogWindow> audioSettingsWindow;
+    juce::Component::SafePointer<juce::DialogWindow> modifierWindow;
     juce::ApplicationCommandManager commandManager;
 
     // Current settings

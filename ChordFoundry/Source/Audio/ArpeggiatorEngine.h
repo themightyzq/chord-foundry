@@ -1,6 +1,8 @@
 #pragma once
 
 #include <juce_core/juce_core.h>
+#include <cstdint>
+#include <random>
 #include <vector>
 
 namespace ChordFoundry {
@@ -21,6 +23,17 @@ public:
     // empty `notes` vector, returns `notes` unchanged.
     std::vector<float> getArpeggioSequence(const std::vector<float>& notes, const juce::String& mode);
 
+    // Same, but "Random" is shuffled from `seed`, so the same notes and seed always give the
+    // same order. Playback and MIDI export use this with seedFor(), so a block's random order
+    // does not change when something else in the project is edited, and the exported file
+    // matches what was heard.
+    std::vector<float> getArpeggioSequence(const std::vector<float>& notes, const juce::String& mode,
+                                           std::uint32_t seed);
+
+    // A seed derived from a block's content: its MIDI notes and first step. Editing other
+    // blocks, the tempo, or the block's length does not change it.
+    static std::uint32_t seedFor(const std::vector<int>& midiNotes, int startStep);
+
     // Returns the note length in seconds for a given arp-length division
     // ("1/16", "1/8", "1/4", "1/2") at the given tempo (BPM). Unrecognised
     // divisions default to "1/16". tempo is beats (quarter notes) per minute.
@@ -35,6 +48,9 @@ public:
     static int getNoteLengthSteps(const juce::String& arpLength);
 
 private:
+    static std::vector<float> reorder(const std::vector<float>& notes, const juce::String& mode,
+                                      std::mt19937& rng);
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(ArpeggiatorEngine)
 };
 

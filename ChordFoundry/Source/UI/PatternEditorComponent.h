@@ -11,13 +11,17 @@ namespace ChordFoundry {
  * 
  * Features:
  * - 32-step grid for pattern creation
- * - Visual block editing with drag and drop
+ * - Visual block editing with the mouse: drag across empty steps to draw a block, drag a
+ *   block to move it, drag the right edge of its last step to resize it, click a block to
+ *   remove it, Shift-click its first step to toggle "strike again"
+
  * - Real-time playback position indicator
  * - Block length and position adjustment
  * - Chord assignment per block
  * - Pattern randomization and templates
  */
 class PatternEditorComponent : public juce::Component,
+                              public juce::TooltipClient,
                               public juce::Button::Listener,
                               public juce::DragAndDropTarget
 {
@@ -26,7 +30,14 @@ public:
     ~PatternEditorComponent() override = default;
     
     void paint(juce::Graphics& g) override;
+    void paintOverChildren(juce::Graphics& g) override;
     void resized() override;
+
+    // Tooltip for the step under the mouse (the step buttons themselves do not take the mouse).
+    juce::String getTooltip() override;
+
+    // Bounds of a step button in this component's coordinates (empty if out of range).
+    juce::Rectangle<int> getStepBounds(int step) const;
     
     // Button listener
     void buttonClicked(juce::Button* button) override;
@@ -41,6 +52,8 @@ public:
     void mouseDown(const juce::MouseEvent& event) override;
     void mouseDrag(const juce::MouseEvent& event) override;
     void mouseUp(const juce::MouseEvent& event) override;
+    void mouseMove(const juce::MouseEvent& event) override;
+    void mouseExit(const juce::MouseEvent& event) override;
     
     // Public API
     void setBlocks(const std::vector<BlockData>& blocks);
@@ -105,9 +118,15 @@ private:
     std::vector<std::unique_ptr<StepButton>> stepButtons;
     
     // Editing state
-    bool isDragging = false;
-    int dragStartStep = -1;
-    int dragCurrentStep = -1;
+    enum class DragMode { none, draw, move, resize };
+    DragMode dragMode = DragMode::none;
+    int dragBlockIndex = -1;       // block being moved or resized
+    int dragGrabOffset = 0;        // steps from the block's start to where it was grabbed
+    int dragStartStep = -1;        // step the mouse went down on
+    int dragCurrentStep = -1;      // step the mouse is over now
+    bool dragTravelled = false;    // the mouse reached a step other than the one it went down on
+    BlockData dragOriginal;        // the block as it was when the drag began
+    int hoveredStep = -1;
     int selectedChordIndex = 0;
     
     // Layout constants
@@ -123,12 +142,18 @@ private:
     int getHeaderHeight() const;
     int getButtonAreaHeight() const;
     void updatePlayheadPosition();
+
+    // Mouse helpers
+    int getStepAt(juce::Point<int> position, bool clampToGrid) const;
+    bool isInResizeZone(juce::Point<int> position, int step) const;
+    void handleStepClick(int step, bool shiftDown);
+    void updateHover(int step);
     
     // Block management
-    void addBlockAtStep(int startStep, int length = 1);
+    void addBlockAtStep(int startStep, int length = 1, bool replaceExisting = true);
     void removeBlockAtStep(int step);
     BlockData* findBlockAtStep(int step);
-    int findBlockIndexAtStep(int step);
+    int findBlockIndexAtStep(int step) const;
     
     // Visual helpers
     juce::Colour getChordColour(int chordIndex) const;

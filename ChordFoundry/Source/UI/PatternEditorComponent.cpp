@@ -10,9 +10,6 @@ PatternEditorComponent::StepButton::StepButton(int stepNumber)
     setAccessible(true);
     setTitle("Step " + juce::String(stepNumber + 1));
     setDescription("Pattern step " + juce::String(stepNumber + 1) + " of 32");
-    setTooltip("Step " + juce::String(stepNumber + 1) + ". Click to add or remove a block of the selected chord. "
-               "Shift-click the first step of a block to make it strike its chord again "
-               "instead of sustaining the one before.");
 }
 
 void PatternEditorComponent::StepButton::paintButton(juce::Graphics& g, 
@@ -172,39 +169,12 @@ int PatternEditorComponent::getButtonAreaHeight() const
 //==============================================================================
 void PatternEditorComponent::buttonClicked(juce::Button* button)
 {
-    // Check if it's a step button
+    // Step buttons only see keyboard activation (the mouse is handled by this component).
     for (size_t i = 0; i < stepButtons.size(); ++i)
     {
         if (stepButtons[i].get() == button)
         {
-            int stepNum = static_cast<int>(i);
-
-            // Shift-click on the first step of a block: toggle "strike again" for that block
-            if (juce::ModifierKeys::currentModifiers.isShiftDown())
-            {
-                const int index = findBlockIndexAtStep(stepNum);
-                if (index >= 0 && blocks[static_cast<size_t>(index)].startStep == stepNum)
-                {
-                    auto changed = blocks[static_cast<size_t>(index)];
-                    changed.newStrike = !changed.newStrike;
-                    blocks[static_cast<size_t>(index)] = changed;
-                    updateStepButtons();
-
-                    if (onBlockModified)
-                        onBlockModified(index, changed);
-                }
-                return;
-            }
-            
-            // Toggle block at this step
-            if (findBlockAtStep(stepNum))
-            {
-                removeBlockAtStep(stepNum);
-            }
-            else
-            {
-                addBlockAtStep(stepNum, 1);
-            }
+            handleStepClick(static_cast<int>(i), juce::ModifierKeys::currentModifiers.isShiftDown());
             return;
         }
     }
@@ -247,56 +217,269 @@ void PatternEditorComponent::itemDragExit(const SourceDetails& dragSourceDetails
     juce::ignoreUnused(dragSourceDetails);
 }
 
+void PatternEditorComponent::handleStepClick(int stepNum, bool shiftDown)
+{
+    const int index = findBlockIndexAtStep(stepNum);
+
+    // Shift-click on the first step of a block: toggle "strike again" for that block
+    if (shiftDown)
+    {
+        if (index >= 0 && blocks[static_cast<size_t>(index)].startStep == stepNum)
+        {
+            auto changed = blocks[static_cast<size_t>(index)];
+            changed.newStrike = !changed.newStrike;
+            blocks[static_cast<size_t>(index)] = changed;
+            updateStepButtons();
+
+            if (onBlockModified)
+                onBlockModified(index, changed);
+        }
+        return;
+    }
+
+    // A plain click toggles a one-step block
+    if (index >= 0)
+        removeBlockAtStep(stepNum);
+    else
+        addBlockAtStep(stepNum, 1);
+}
+
+int PatternEditorComponent::getStepAt(juce::Point<int> position, bool clampToGrid) const
+{
+    int best = -1;
+    float bestDistance = 0.0f;
+
+    for (size_t i = 0; i < stepButtons.size(); ++i)
+    {
+        const auto bounds = stepButtons[i]->getBounds();
+        if (bounds.contains(position))
+            return static_cast<int>(i);
+
+        if (clampToGrid)
+        {
+            const float distance = position.toFloat().getDistanceFrom(bounds.getConstrainedPoint(position).toFloat());
+            if (best < 0 || distance < bestDistance)
+            {
+                best = static_cast<int>(i);
+                bestDistance = distance;
+            }
+        }
+    }
+
+    return best;
+}
+
+bool PatternEditorComponent::isInResizeZone(juce::Point<int> position, int step) const
+{
+    if (step < 0 || step >= static_cast<int>(stepButtons.size()))
+        return false;
+
+    // The right-hand part of a block's last step is its resize handle.
+    const auto bounds = stepButtons[static_cast<size_t>(step)]->getBounds();
+    const int index = findBlockIndexAtStep(step);
+    if (index < 0)
+        return false;
+
+    const auto& block = blocks[static_cast<size_t>(index)];
+    return step == block.startStep + block.lengthSteps - 1
+        && position.x >= bounds.getRight() - juce::jmax(10, bounds.getWidth() / 3);
+}
+
+juce::Rectangle<int> PatternEditorComponent::getStepBounds(int step) const
+{
+    if (step < 0 || step >= static_cast<int>(stepButtons.size()))
+        return {};
+
+    return stepButtons[static_cast<size_t>(step)]->getBounds();
+}
+
 void PatternEditorComponent::mouseDown(const juce::MouseEvent& event)
 {
-    // Start drag operation for block editing
-    auto stepButton = dynamic_cast<StepButton*>(event.eventComponent);
-    if (stepButton)
+    dragMode = DragMode::none;
+    const int step = getStepAt(event.getPosition(), false);
+    if (step < 0)
+        return;
+
+    const int index = findBlockIndexAtStep(step);
+
+    // Right-click removes the block under the mouse
+    if (event.mods.isPopupMenu())
     {
-        isDragging = true;
-        dragStartStep = stepButton->getStepNumber();
-        dragCurrentStep = dragStartStep;
+        if (index >= 0)
+            removeBlockAtStep(step);
+        return;
+    }
+
+    dragStartStep = step;
+    dragCurrentStep = step;
+    dragTravelled = false;
+
+    if (index >= 0)
+    {
+        dragBlockIndex = index;
+        dragOriginal = blocks[static_cast<size_t>(index)];
+        dragGrabOffset = step - dragOriginal.startStep;
+        dragMode = isInResizeZone(event.getPosition(), step) ? DragMode::resize : DragMode::move;
+    }
+    else
+    {
+        dragMode = DragMode::draw;
     }
 }
 
 void PatternEditorComponent::mouseDrag(const juce::MouseEvent& event)
 {
-    if (!isDragging)
+    if (dragMode == DragMode::none)
         return;
-        
-    // Find which step we're over
-    for (auto& stepButton : stepButtons)
+
+    const int step = getStepAt(event.getPosition(), true);
+    if (step < 0 || step == dragCurrentStep)
+        return;
+
+    dragCurrentStep = step;
+    dragTravelled = true;
+
+    if (dragMode == DragMode::move)
     {
-        if (stepButton->getBounds().contains(event.getPosition()))
+        auto candidate = dragOriginal;
+        candidate.startStep = ChordProgression::clampMoveStart(dragOriginal, step - dragGrabOffset);
+
+        // Stay at the last position that is free (it will not jump over another block of the same chord).
+        if (ChordProgression::isPlacementFree(blocks, dragBlockIndex, candidate))
         {
-            int newStep = stepButton->getStepNumber();
-            if (newStep != dragCurrentStep)
-            {
-                dragCurrentStep = newStep;
-                // Visual feedback could be added here
-            }
-            break;
+            blocks[static_cast<size_t>(dragBlockIndex)] = candidate;
+            updateStepButtons();
         }
     }
+    else if (dragMode == DragMode::resize)
+    {
+        auto candidate = blocks[static_cast<size_t>(dragBlockIndex)];
+        candidate.lengthSteps = juce::jlimit(1, ChordProgression::maxResizeLength(blocks, dragBlockIndex),
+                                             step - candidate.startStep + 1);
+        blocks[static_cast<size_t>(dragBlockIndex)] = candidate;
+        updateStepButtons();
+    }
+
+    repaint();
 }
 
 void PatternEditorComponent::mouseUp(const juce::MouseEvent& event)
 {
-    juce::ignoreUnused(event);
-    
-    if (isDragging && dragStartStep != dragCurrentStep)
-    {
-        // Create block from drag start to current position
-        int startStep = juce::jmin(dragStartStep, dragCurrentStep);
-        int endStep = juce::jmax(dragStartStep, dragCurrentStep);
-        int length = endStep - startStep + 1;
-        
-        addBlockAtStep(startStep, length);
-    }
-    
-    isDragging = false;
+    const auto mode = dragMode;
+    const int index = dragBlockIndex;
+    const int startStep = dragStartStep;
+    const int endStep = dragCurrentStep;
+    const bool travelled = dragTravelled;
+
+    dragMode = DragMode::none;
+    dragBlockIndex = -1;
     dragStartStep = -1;
     dragCurrentStep = -1;
+    repaint();
+
+    if (mode == DragMode::none || startStep < 0)
+        return;
+
+    if (mode == DragMode::draw)
+    {
+        if (startStep == endStep)
+        {
+            handleStepClick(startStep, event.mods.isShiftDown());
+            return;
+        }
+
+        // Draw a block across the dragged steps, stopping before any block of the same chord.
+        const int first = juce::jmin(startStep, endStep);
+        const int wanted = std::abs(endStep - startStep) + 1;
+        const int length = ChordProgression::freeRunLength(blocks, selectedChordIndex, first, wanted);
+
+        if (length > 0)
+            addBlockAtStep(first, length, false);
+        return;
+    }
+
+    if (index < 0 || index >= static_cast<int>(blocks.size()))
+        return;
+
+    const auto& current = blocks[static_cast<size_t>(index)];
+    const bool changed = current.startStep != dragOriginal.startStep || current.lengthSteps != dragOriginal.lengthSteps;
+
+    if (changed)
+    {
+        // Hand the finished block to the owner; it validates it and the editor then shows what it kept.
+        if (onBlockModified)
+            onBlockModified(index, current);
+    }
+    else if (! travelled)
+    {
+        handleStepClick(startStep, event.mods.isShiftDown());
+    }
+    // else: the drag went nowhere that was allowed; the block stays as it was
+}
+
+void PatternEditorComponent::updateHover(int step)
+{
+    if (step == hoveredStep)
+        return;
+
+    if (hoveredStep >= 0 && hoveredStep < static_cast<int>(stepButtons.size()))
+        stepButtons[static_cast<size_t>(hoveredStep)]->setState(juce::Button::buttonNormal);
+
+    hoveredStep = step;
+
+    if (hoveredStep >= 0 && hoveredStep < static_cast<int>(stepButtons.size()))
+        stepButtons[static_cast<size_t>(hoveredStep)]->setState(juce::Button::buttonOver);
+}
+
+void PatternEditorComponent::mouseMove(const juce::MouseEvent& event)
+{
+    const int step = getStepAt(event.getPosition(), false);
+    updateHover(step);
+
+    if (step >= 0 && isInResizeZone(event.getPosition(), step))
+        setMouseCursor(juce::MouseCursor::LeftRightResizeCursor);
+    else if (step >= 0 && findBlockIndexAtStep(step) >= 0)
+        setMouseCursor(juce::MouseCursor::DraggingHandCursor);
+    else
+        setMouseCursor(juce::MouseCursor::NormalCursor);
+}
+
+void PatternEditorComponent::mouseExit(const juce::MouseEvent& event)
+{
+    juce::ignoreUnused(event);
+    updateHover(-1);
+    setMouseCursor(juce::MouseCursor::NormalCursor);
+}
+
+juce::String PatternEditorComponent::getTooltip()
+{
+    const int step = getStepAt(getMouseXYRelative(), false);
+    if (step < 0)
+        return {};
+
+    const int index = findBlockIndexAtStep(step);
+    juce::String text = "Step " + juce::String(step + 1) + ". ";
+
+    if (index < 0)
+        return text + "Click to add a one-step block of the selected chord, or drag across steps to draw a longer one.";
+
+    return text + "Drag the block to move it, drag the right edge of its last step to resize it, "
+                  "click to remove it. Shift-click its first step to strike the chord again "
+                  "instead of sustaining the one before. Right-click also removes it.";
+}
+
+void PatternEditorComponent::paintOverChildren(juce::Graphics& g)
+{
+    if (dragMode != DragMode::draw || dragStartStep < 0 || dragCurrentStep < 0 || dragStartStep == dragCurrentStep)
+        return;
+
+    const int first = juce::jmin(dragStartStep, dragCurrentStep);
+    const int wanted = std::abs(dragCurrentStep - dragStartStep) + 1;
+    const int length = ChordProgression::freeRunLength(blocks, selectedChordIndex, first, wanted);
+
+    g.setColour(ModernLookAndFeel::Colors::borderFocus);
+    for (int step = first; step < first + length; ++step)
+        g.drawRect(getStepBounds(step), 2);
 }
 
 //==============================================================================
@@ -406,6 +589,7 @@ void PatternEditorComponent::setupStepButtons()
     {
         auto button = std::make_unique<StepButton>(i);
         button->addListener(this);
+        button->setInterceptsMouseClicks(false, false);   // this component handles the mouse for the whole grid
         addAndMakeVisible(*button);
         stepButtons.push_back(std::move(button));
     }
@@ -450,10 +634,11 @@ void PatternEditorComponent::updatePlayheadPosition()
 }
 
 //==============================================================================
-void PatternEditorComponent::addBlockAtStep(int startStep, int length)
+void PatternEditorComponent::addBlockAtStep(int startStep, int length, bool replaceExisting)
 {
-    // Remove any existing block at this step first
-    removeBlockAtStep(startStep);
+    // A click replaces whatever block is at this step; a drawn block was already checked to be free
+    if (replaceExisting)
+        removeBlockAtStep(startStep);
     
     // Create new block
     BlockData newBlock;
@@ -493,7 +678,7 @@ BlockData* PatternEditorComponent::findBlockAtStep(int step)
     return nullptr;
 }
 
-int PatternEditorComponent::findBlockIndexAtStep(int step)
+int PatternEditorComponent::findBlockIndexAtStep(int step) const
 {
     for (size_t i = 0; i < blocks.size(); ++i)
     {

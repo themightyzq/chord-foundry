@@ -2,6 +2,8 @@
 #include <juce_gui_extra/juce_gui_extra.h>
 #include <cstdio>
 #include "MainComponent.h"
+#include "UI/ChordModifierDialog.h"
+#include "UI/PatternEditorComponent.h"
 
 //==============================================================================
 class ChordFoundryApplication : public juce::JUCEApplication
@@ -32,6 +34,14 @@ public:
         if (args.contains("--project-selfcheck"))
         {
             runProjectSelfCheck(args);
+            return;
+        }
+
+        // Developer tool: send mouse events to the pattern editor (draw, move, resize, click) and
+        // check the blocks it ends up with.  ChordFoundry --editor-selfcheck
+        if (args.contains("--editor-selfcheck"))
+        {
+            runEditorSelfCheck();
             return;
         }
 
@@ -127,6 +137,126 @@ public:
     };
 
 private:
+    void runEditorSelfCheck()
+    {
+        using namespace ChordFoundry;
+
+        int failures = 0;
+        const auto check = [&failures](bool ok, const juce::String& what)
+        {
+            std::printf("%s  %s\n", ok ? "PASS" : "FAIL", what.toRawUTF8());
+            if (! ok)
+                ++failures;
+        };
+
+        {
+            // The model stands in for MainComponent: the editor reports each change to it, and
+            // the editor is then shown what the model kept.
+            ChordProgression model;
+            model.addChord(ChordData("I"));
+            model.addChord(ChordData("V"));
+
+            PatternEditorComponent editor;
+            editor.setSize(1168, 190);
+            editor.setChordCount(2);
+
+            const auto sync = [&] { editor.setBlocks(model.getBlocks()); };
+            editor.onBlockAdded = [&](const BlockData& b) { model.addBlock(b); sync(); };
+            editor.onBlockRemoved = [&](int i) { model.removeBlock(i); sync(); };
+            editor.onBlockModified = [&](int i, const BlockData& b) { model.replaceBlock(i, b); sync(); };
+
+            const auto event = [&](juce::Point<int> p, int modifiers, bool dragged)
+            {
+                const auto position = p.toFloat();
+                return juce::MouseEvent(juce::Desktop::getInstance().getMainMouseSource(), position,
+                                        juce::ModifierKeys(modifiers), 1.0f, 0.0f, 0.0f, 0.0f, 0.0f,
+                                        &editor, &editor, juce::Time::getCurrentTime(), position,
+                                        juce::Time::getCurrentTime(), 1, dragged);
+            };
+            const auto left = juce::ModifierKeys::leftButtonModifier;
+            const auto centre = [&](int step) { return editor.getStepBounds(step).getCentre(); };
+            const auto nearRightEdge = [&](int step)
+            {
+                const auto b = editor.getStepBounds(step);
+                return juce::Point<int>(b.getRight() - 3, b.getCentreY());
+            };
+            const auto drag = [&](juce::Point<int> from, juce::Point<int> to, int modifiers = left)
+            {
+                editor.mouseDown(event(from, modifiers, false));
+                editor.mouseDrag(event(to, modifiers, true));
+                editor.mouseUp(event(to, modifiers, true));
+            };
+            const auto click = [&](juce::Point<int> at, int modifiers = left)
+            {
+                editor.mouseDown(event(at, modifiers, false));
+                editor.mouseUp(event(at, modifiers, false));
+            };
+            const auto blockAt = [&](int start) -> const BlockData*
+            {
+                for (const auto& b : model.getBlocks())
+                    if (b.startStep == start)
+                        return &b;
+                return nullptr;
+            };
+
+            // Draw: drag across empty steps 2..5
+            drag(centre(2), centre(5));
+            check(model.getBlockCount() == 1 && blockAt(2) != nullptr && blockAt(2)->lengthSteps == 4,
+                  "drag across empty steps 2-5 draws a block of 4 steps");
+
+            // Move: grab step 3 (second step of the block), drop on step 7
+            drag(centre(3), centre(7));
+            check(model.getBlockCount() == 1 && blockAt(6) != nullptr && blockAt(6)->lengthSteps == 4,
+                  "dragging the block from step 3 to step 7 moves it to start at step 6");
+
+            // Resize: drag the right edge of its last step (step 9) out to step 12
+            drag(nearRightEdge(9), centre(12));
+            check(blockAt(6) != nullptr && blockAt(6)->lengthSteps == 7, "dragging the right edge to step 12 resizes it to 7 steps");
+
+            // Shrink with the same handle
+            drag(nearRightEdge(12), centre(8));
+            check(blockAt(6) != nullptr && blockAt(6)->lengthSteps == 3, "dragging the edge back to step 8 shrinks it to 3 steps");
+
+            // A second block, then a move that would collide stays put
+            drag(centre(20), centre(23));
+            check(model.getBlockCount() == 2 && blockAt(20) != nullptr, "a second block is drawn at step 20");
+            drag(centre(7), centre(21));
+            check(blockAt(6) != nullptr && blockAt(20) != nullptr && model.getBlockCount() == 2,
+                  "a move onto the other block is refused; both blocks keep their places");
+
+            // Resizing is limited by the next block
+            drag(nearRightEdge(8), centre(30));
+            check(blockAt(6) != nullptr && blockAt(6)->lengthSteps == 14, "growing stops at the next block (step 20)");
+
+            // A moved block cannot leave the grid
+            drag(centre(21), centre(31));
+            check(blockAt(28) != nullptr && blockAt(28)->lengthSteps == 4, "a block dragged past the end stops at the end of the grid");
+
+            // Drawing across an existing block stops before it
+            drag(centre(0), centre(10));
+            check(blockAt(0) != nullptr && blockAt(0)->lengthSteps == 6, "drawing from 0 towards 10 stops at the block at 6");
+
+            // Shift-click toggles strike
+            click(centre(0), left | juce::ModifierKeys::shiftModifier);
+            check(blockAt(0) != nullptr && blockAt(0)->newStrike, "Shift-click on a block's first step marks it to strike again");
+            click(centre(0), left | juce::ModifierKeys::shiftModifier);
+            check(blockAt(0) != nullptr && ! blockAt(0)->newStrike, "and again clears it");
+
+            // Click removes; right-click removes; click on empty adds a one-step block
+            const int before = model.getBlockCount();
+            click(centre(2));
+            check(model.getBlockCount() == before - 1 && blockAt(0) == nullptr, "a plain click on a block removes it");
+            click(centre(30), juce::ModifierKeys::rightButtonModifier);
+            check(model.getBlockCount() == before - 2, "right-click removes the block under the mouse");
+            click(centre(25));
+            check(blockAt(25) != nullptr && blockAt(25)->lengthSteps == 1, "a click on an empty step adds a one-step block");
+        }
+
+        std::printf("%d failure(s)\n", failures);
+        setApplicationReturnValue(failures == 0 ? 0 : 1);
+        quit();
+    }
+
     void runProjectSelfCheck(const juce::StringArray& args)
     {
         using namespace ChordFoundry;
@@ -185,6 +315,12 @@ private:
             c.onBlockAdded(BlockData(0, 24, 2, juce::Colours::grey));
             check(beforeProgression.getChordCount() + 1 == c.getChordCountForCheck(), "a chord was added");
 
+            ChordData modified = c.getChordForCheck(0);
+            modified.extension = "+7th";
+            modified.arpMode = "Up";
+            c.onChordModified(0, modified);
+            check(c.hasUnsavedChanges(), "editing a chord's modifiers marks the project changed");
+
             bool saved = false;
             c.saveProject([&saved](bool ok) { saved = ok; });
             check(saved, "Save writes to the open file");
@@ -196,6 +332,8 @@ private:
             check(after.key == "D" && after.mode == "Dorian" && after.masterVolume == 0.31f
                       && after.loop == ! before.loop && after.clickTrack == ! before.clickTrack,
                   "settings were saved");
+            check(afterProgression.getChord(0).extension == "+7th" && afterProgression.getChord(0).arpMode == "Up",
+                  "the chord modifiers were saved");
             check(afterProgression.getChordCount() == beforeProgression.getChordCount() + 1
                       && afterProgression.getBlockCount() == beforeProgression.getBlockCount() + 1,
                   "chords and blocks were saved");
@@ -245,6 +383,31 @@ private:
         const int height = args[i + 3].getIntValue();
 
         int result = 0;
+
+        // --dialog renders the chord modifier dialog (with Custom voicing open) instead.
+        if (args.contains("--dialog"))
+        {
+            ChordFoundry::ChordData chord("vi");
+            chord.extension = "+7th";
+            chord.voicing = "Custom";
+            chord.arpMode = "Up";
+            chord.arpLength = "1/8";
+
+            ChordFoundry::ChordModifierDialog dialog(chord);
+            auto* content = dialog.getContentComponent();
+            const auto image = content->createComponentSnapshot(content->getLocalBounds(), true, 1.0f);
+
+            juce::PNGImageFormat png;
+            out.deleteFile();
+            juce::FileOutputStream stream(out);
+            if (! stream.openedOk() || ! png.writeImageToStream(image, stream))
+                result = 4;
+
+            std::printf("dialog content %dx%d\n", content->getWidth(), content->getHeight());
+            setApplicationReturnValue(result);
+            quit();
+            return;
+        }
 
         {
             ChordFoundry::MainComponent component;

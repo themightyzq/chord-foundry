@@ -38,6 +38,7 @@ public:
     // Public API
     void setChordProgression(const std::vector<ChordData>& chords);
     void setCurrentChordIndex(int index);
+    int getCurrentChordIndex() const { return currentChordIndex; }
     void clearProgression();
     void addChord(const ChordData& chord);
     void removeChord(int index);
@@ -47,6 +48,7 @@ public:
     std::function<void(int)> onChordSelected;
     std::function<void(int)> onChordRemoved;
     std::function<void(int, const ChordData&)> onChordModified;
+    std::function<void(int)> onModifyChord;   // open the modifier dialog for this chord
     std::function<void()> onClearAll;
     std::function<void()> onRandomizeProgression;
     std::function<void()> onExportProgression;
@@ -65,6 +67,11 @@ private:
         const ChordData& getChordData() const { return chordData; }
         int getChordIndex() const { return chordIndex; }
         void setChordIndex(int index) { chordIndex = index; }
+
+        // Double-click or right-click asks to edit this chord's modifiers.
+        std::function<void(int)> onModifyRequested;
+        void mouseDoubleClick(const juce::MouseEvent&) override;
+        void mouseUp(const juce::MouseEvent&) override;
         void setIsCurrentChord(bool isCurrent) { isCurrentChord = isCurrent; repaint(); }
         
     private:
@@ -83,6 +90,7 @@ private:
     
     // UI elements
     std::unique_ptr<juce::Label> headerLabel;
+    std::unique_ptr<juce::TextButton> modifiersButton;
     std::unique_ptr<juce::TextButton> clearButton;
     std::unique_ptr<juce::TextButton> randomizeButton;
     std::unique_ptr<juce::TextButton> exportButton;
@@ -97,6 +105,7 @@ private:
     //==============================================================================
     void setupUI();
     void updateChordButtons();
+    void updateModifiersButton();
     int getHeaderHeight() const;
     juce::Rectangle<int> getAnalysisBounds() const;
     void updateChordButtonLayout();

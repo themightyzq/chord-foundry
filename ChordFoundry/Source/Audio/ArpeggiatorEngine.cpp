@@ -8,6 +8,39 @@ namespace ChordFoundry {
 // Ported from archive/core/arpeggiator.py: get_arpeggio_sequence(notes, mode)
 std::vector<float> ArpeggiatorEngine::getArpeggioSequence(const std::vector<float>& notes, const juce::String& mode)
 {
+    static thread_local std::mt19937 rng { std::random_device {}() };
+    return reorder(notes, mode, rng);
+}
+
+std::vector<float> ArpeggiatorEngine::getArpeggioSequence(const std::vector<float>& notes, const juce::String& mode,
+                                                          std::uint32_t seed)
+{
+    std::mt19937 rng(seed);
+    return reorder(notes, mode, rng);
+}
+
+std::uint32_t ArpeggiatorEngine::seedFor(const std::vector<int>& midiNotes, int startStep)
+{
+    // FNV-1a over the notes and the start step.
+    std::uint32_t hash = 2166136261u;
+    const auto mix = [&hash](std::uint32_t value)
+    {
+        for (int i = 0; i < 4; ++i)
+        {
+            hash ^= (value >> (8 * i)) & 0xffu;
+            hash *= 16777619u;
+        }
+    };
+
+    for (const int note : midiNotes)
+        mix(static_cast<std::uint32_t>(note));
+    mix(static_cast<std::uint32_t>(startStep));
+    return hash;
+}
+
+std::vector<float> ArpeggiatorEngine::reorder(const std::vector<float>& notes, const juce::String& mode,
+                                              std::mt19937& rng)
+{
     if (notes.empty() || mode.isEmpty() || mode == "None")
         return notes;
 
@@ -20,7 +53,6 @@ std::vector<float> ArpeggiatorEngine::getArpeggioSequence(const std::vector<floa
     if (mode == "Random")
     {
         std::vector<float> result(notes);
-        static thread_local std::mt19937 rng { std::random_device {}() };
         std::shuffle(result.begin(), result.end(), rng);
         return result;
     }

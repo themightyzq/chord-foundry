@@ -171,6 +171,8 @@ target_sources(ChordFoundryTests PRIVATE
     Source/MusicTheory/MusicTheoryEngine.cpp
     Source/MusicTheory/MusicTheoryEngine.h
     Tests/ArpeggiatorEngineTests.cpp
+    Tests/BlockEditingTests.cpp
+    Tests/ChordModifierTests.cpp
     Tests/ChordSynthesizerTests.cpp
     Tests/MidiExporterTests.cpp
     Tests/ProjectFileTests.cpp
@@ -200,6 +202,8 @@ target_link_libraries(ChordFoundryTests PRIVATE
 
 # One ctest entry per suite: the runner takes the suite name as its only argument.
 add_test(NAME ArpeggiatorEngineTests COMMAND ChordFoundryTests ArpeggiatorEngine)
+add_test(NAME BlockEditingTests COMMAND ChordFoundryTests BlockEditing)
+add_test(NAME ChordModifierTests COMMAND ChordFoundryTests ChordModifiers)
 add_test(NAME ChordSynthesizerTests COMMAND ChordFoundryTests ChordSynthesizer)
 add_test(NAME MidiExporterTests COMMAND ChordFoundryTests MidiExporter)
 add_test(NAME ProjectFileTests COMMAND ChordFoundryTests ProjectFile)

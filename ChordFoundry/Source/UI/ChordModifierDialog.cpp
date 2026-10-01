@@ -1,402 +1,290 @@
 #include "ChordModifierDialog.h"
 #include "../MusicTheory/MusicTheoryEngine.h"
 
-#include <algorithm>
-
 namespace ChordFoundry {
 
-//==============================================================================
-// ChordModifierDialog Implementation
-ChordModifierDialog::ChordModifierDialog(const ChordData& chord)
-    : DialogWindow("Edit Chord: " + chord.roman, ModernLookAndFeel::Colors::surface, true),
-      modifiedChord(chord)
+namespace {
+
+// The engine treats "" and "None" alike; the model keeps "" for "no modifier".
+juce::String storedName(const juce::String& shown)
 {
-    // Set up modern look and feel
-    modernLookAndFeel = std::make_unique<ModernLookAndFeel>();
-    setLookAndFeel(modernLookAndFeel.get());
-    
-    // Create content component
-    contentComponent = std::make_unique<ContentComponent>(modifiedChord, *this);
-    setContentOwned(contentComponent.get(), true);
-    
-    // Configure dialog properties
+    return shown == "None" ? juce::String() : shown;
+}
+
+juce::String shownName(const juce::String& stored)
+{
+    return stored.isEmpty() ? juce::String("None") : stored;
+}
+
+void fillCombo(juce::ComboBox& combo, const std::vector<juce::String>& names, const juce::String& current)
+{
+    int selectedId = 1;
+    for (size_t i = 0; i < names.size(); ++i)
+    {
+        combo.addItem(names[i], static_cast<int>(i) + 1);
+        if (names[i] == current)
+            selectedId = static_cast<int>(i) + 1;
+    }
+
+    // A value the engine does not know would play as "None"; show that instead of a blank box.
+    combo.setSelectedId(selectedId, juce::dontSendNotification);
+}
+
+} // namespace
+
+//==============================================================================
+class ChordModifierDialog::Content : public juce::Component
+{
+public:
+    Content(ChordModifierDialog& ownerDialog, const ChordData& chord)
+        : owner(ownerDialog), edited(chord)
+    {
+        for (auto* group : { &extensionGroup, &inversionGroup, &voicingGroup, &arpGroup, &customGroup })
+            addAndMakeVisible(*group);
+
+        setupCombo(extensionCombo, "Chord extension", "Adds or replaces a note: +6th, +7th, +9th, sus2 or sus4",
+                   MusicTheoryEngine::EXTENSION_NAMES, shownName(edited.extension),
+                   [this] { edited.extension = storedName(extensionCombo.getText()); });
+
+        setupCombo(inversionCombo, "Chord inversion", "Which note of the chord is lowest",
+                   MusicTheoryEngine::INVERSION_NAMES, shownName(edited.inversion),
+                   [this] { edited.inversion = storedName(inversionCombo.getText()); });
+
+        setupCombo(voicingCombo, "Chord voicing", "How the notes are spread: root, open, drop 2 or custom",
+                   MusicTheoryEngine::VOICING_NAMES, shownName(edited.voicing),
+                   [this]
+                   {
+                       edited.voicing = storedName(voicingCombo.getText());
+                       updateCustomVisibility();
+                   });
+
+        setupCombo(arpModeCombo, "Arpeggiator mode", "Play the chord as a sequence of single notes in this order (None plays it as a chord)",
+                   MusicTheoryEngine::ARP_MODE_NAMES, shownName(edited.arpMode),
+                   [this]
+                   {
+                       edited.arpMode = storedName(arpModeCombo.getText());
+                       arpLengthCombo.setEnabled(edited.hasArpeggiator());
+                   });
+
+        setupCombo(arpLengthCombo, "Arpeggiator note length", "Length of each arpeggio note, in note values at the set tempo",
+                   MusicTheoryEngine::ARP_LENGTH_NAMES, edited.arpLength.isEmpty() ? juce::String("1/8") : edited.arpLength,
+                   [this] { edited.arpLength = arpLengthCombo.getText(); });
+        arpLengthCombo.setEnabled(edited.hasArpeggiator());
+
+        setupSlider(noteCountSlider, noteCountLabel, "Notes", "Number of notes in the custom voicing", 3, 8, edited.customVoicing.numNotes,
+                    [this] { edited.customVoicing.numNotes = static_cast<int>(noteCountSlider.getValue()); });
+        setupSlider(positionSlider, positionLabel, "Octave", "Octave position of the custom voicing", 0, 7, edited.customVoicing.position,
+                    [this] { edited.customVoicing.position = static_cast<int>(positionSlider.getValue()); });
+
+        for (size_t i = 0; i < MusicTheoryEngine::SPREAD_TYPE_NAMES.size(); ++i)
+            spreadCombo.addItem(MusicTheoryEngine::SPREAD_TYPE_NAMES[i], static_cast<int>(i) + 1);
+        spreadCombo.setSelectedId(juce::jlimit(0, static_cast<int>(MusicTheoryEngine::SPREAD_TYPE_NAMES.size()) - 1,
+                                               edited.customVoicing.spreadType) + 1, juce::dontSendNotification);
+        spreadCombo.onChange = [this] { edited.customVoicing.spreadType = spreadCombo.getSelectedId() - 1; };
+        spreadCombo.setTitle("Custom voicing spread");
+        spreadCombo.setTooltip("How the custom voicing spreads its notes");
+        addAndMakeVisible(spreadCombo);
+        spreadLabel.setText("Spread", juce::dontSendNotification);
+        spreadLabel.setColour(juce::Label::textColourId, ModernLookAndFeel::Colors::textSecondary);
+        addAndMakeVisible(spreadLabel);
+
+        setupButton(previewButton, "Preview", "Play the chord with these settings", [this]
+        {
+            if (owner.onPreview)
+                owner.onPreview(edited);
+        });
+        setupButton(cancelButton, "Cancel", "Close without changing the chord (Escape)", [this] { owner.finish(false); });
+        setupButton(applyButton, "Apply", "Put these settings on the chord", [this] { owner.finish(true); });
+
+        updateCustomVisibility();
+    }
+
+    ChordData getEdited() const { return edited; }
+
+    int getPreferredHeight() const
+    {
+        return 16 + titleHeight + 4 * (groupHeight + gap) + (edited.voicing == "Custom" ? customHeight + gap : 0) + 44 + 16;
+    }
+
+    void paint(juce::Graphics& g) override
+    {
+        g.fillAll(ModernLookAndFeel::Colors::surface);
+        g.setColour(ModernLookAndFeel::Colors::textPrimary);
+        g.setFont(ModernLookAndFeel::Typography::getSubheaderFont());
+        g.drawText("Modifiers for " + edited.roman, getLocalBounds().removeFromTop(16 + titleHeight).withTrimmedTop(8),
+                   juce::Justification::centred);
+    }
+
+    void resized() override
+    {
+        auto bounds = getLocalBounds().reduced(16);
+        bounds.removeFromTop(titleHeight);
+
+        const auto place = [&bounds](juce::GroupComponent& group, int height)
+        {
+            auto area = bounds.removeFromTop(height);
+            group.setBounds(area);
+            bounds.removeFromTop(gap);
+            return area.reduced(14, 0).withTrimmedTop(22).withTrimmedBottom(8);
+        };
+
+        extensionCombo.setBounds(place(extensionGroup, groupHeight).withHeight(28));
+        inversionCombo.setBounds(place(inversionGroup, groupHeight).withHeight(28));
+        voicingCombo.setBounds(place(voicingGroup, groupHeight).withHeight(28));
+
+        auto arp = place(arpGroup, groupHeight).withHeight(28);
+        arpModeCombo.setBounds(arp.removeFromLeft((arp.getWidth() - 10) / 2));
+        arp.removeFromLeft(10);
+        arpLengthCombo.setBounds(arp);
+
+        if (customGroup.isVisible())
+        {
+            auto area = place(customGroup, customHeight);
+            const int labelWidth = 60;
+            auto row = area.removeFromTop(28);
+            noteCountLabel.setBounds(row.removeFromLeft(labelWidth));
+            noteCountSlider.setBounds(row);
+            area.removeFromTop(4);
+            row = area.removeFromTop(28);
+            positionLabel.setBounds(row.removeFromLeft(labelWidth));
+            positionSlider.setBounds(row);
+            area.removeFromTop(4);
+            row = area.removeFromTop(28);
+            spreadLabel.setBounds(row.removeFromLeft(labelWidth));
+            spreadCombo.setBounds(row);
+        }
+
+        auto buttons = getLocalBounds().reduced(16).removeFromBottom(44);
+        const int w = (buttons.getWidth() - 20) / 3;
+        previewButton.setBounds(buttons.removeFromLeft(w));
+        buttons.removeFromLeft(10);
+        cancelButton.setBounds(buttons.removeFromLeft(w));
+        buttons.removeFromLeft(10);
+        applyButton.setBounds(buttons);
+    }
+
+private:
+    static constexpr int titleHeight = 44;
+    static constexpr int groupHeight = 64;
+    static constexpr int customHeight = 140;
+    static constexpr int gap = 10;
+
+    void setupCombo(juce::ComboBox& combo, const juce::String& title, const juce::String& tip,
+                    const std::vector<juce::String>& names, const juce::String& current,
+                    std::function<void()> changed)
+    {
+        fillCombo(combo, names, current);
+        combo.setTitle(title);
+        combo.setTooltip(tip);
+        combo.onChange = std::move(changed);
+        addAndMakeVisible(combo);
+    }
+
+    void setupSlider(juce::Slider& slider, juce::Label& label, const juce::String& name, const juce::String& tip,
+                     int low, int high, int value, std::function<void()> changed)
+    {
+        slider.setSliderStyle(juce::Slider::LinearHorizontal);
+        slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 40, 24);
+        slider.setRange(low, high, 1);
+        slider.setValue(juce::jlimit(low, high, value), juce::dontSendNotification);
+        slider.onValueChange = std::move(changed);
+        slider.setTitle(name);
+        slider.setTooltip(tip);
+        addAndMakeVisible(slider);
+
+        label.setText(name, juce::dontSendNotification);
+        label.setColour(juce::Label::textColourId, ModernLookAndFeel::Colors::textSecondary);
+        addAndMakeVisible(label);
+    }
+
+    void setupButton(juce::TextButton& button, const juce::String& text, const juce::String& tip, std::function<void()> clicked)
+    {
+        button.setButtonText(text);
+        button.setTooltip(tip);
+        button.setTitle(text);
+        button.onClick = std::move(clicked);
+        addAndMakeVisible(button);
+    }
+
+    void updateCustomVisibility()
+    {
+        const bool custom = edited.voicing == "Custom";
+        for (juce::Component* c : { static_cast<juce::Component*>(&customGroup), static_cast<juce::Component*>(&noteCountSlider),
+                                    static_cast<juce::Component*>(&noteCountLabel), static_cast<juce::Component*>(&positionSlider),
+                                    static_cast<juce::Component*>(&positionLabel), static_cast<juce::Component*>(&spreadCombo),
+                                    static_cast<juce::Component*>(&spreadLabel) })
+            c->setVisible(custom);
+
+        if (owner.getContentComponent() == this)
+            owner.setContentComponentSize(getWidth(), getPreferredHeight());
+        resized();
+    }
+
+    ChordModifierDialog& owner;
+    ChordData edited;
+
+    juce::GroupComponent extensionGroup { "extension", "Extension" };
+    juce::GroupComponent inversionGroup { "inversion", "Inversion" };
+    juce::GroupComponent voicingGroup { "voicing", "Voicing" };
+    juce::GroupComponent arpGroup { "arp", "Arpeggiator: mode and note length" };
+    juce::GroupComponent customGroup { "custom", "Custom voicing" };
+
+    juce::ComboBox extensionCombo, inversionCombo, voicingCombo, arpModeCombo, arpLengthCombo, spreadCombo;
+    juce::Slider noteCountSlider, positionSlider;
+    juce::Label noteCountLabel, positionLabel, spreadLabel;
+    juce::TextButton previewButton, cancelButton, applyButton;
+};
+
+//==============================================================================
+ChordModifierDialog::ChordModifierDialog(const ChordData& chord)
+    : DialogWindow("Chord modifiers: " + chord.roman, ModernLookAndFeel::Colors::surface, true)
+{
+    setLookAndFeel(&lookAndFeel);
+
+    content = new Content(*this, chord);
+    content->setSize(480, content->getPreferredHeight());
+    setContentOwned(content, true);
+
     setResizable(false, false);
     setUsingNativeTitleBar(true);
-    setDropShadowEnabled(true);
-    
-    // Set dialog size
-    setSize(500, 600);
-    
-    // Center on screen
-    centreAroundComponent(nullptr, getWidth(), getHeight());
 }
 
-void ChordModifierDialog::buttonClicked(juce::Button* button)
+ChordModifierDialog::~ChordModifierDialog()
 {
-    if (!contentComponent) return;
-    
-    if (button == contentComponent->previewButton.get())
-    {
-        // Preview the chord modifications
-        if (onPreviewChord)
-            onPreviewChord();
-    }
-    else if (button == contentComponent->okButton.get())
-    {
-        // Apply changes and close dialog
-        updateChordFromUI();
-        exitModalState(1); // OK result
-    }
-    else if (button == contentComponent->cancelButton.get())
-    {
-        // Cancel changes and close dialog
-        exitModalState(0); // Cancel result
-    }
+    setLookAndFeel(nullptr);
 }
 
-void ChordModifierDialog::comboBoxChanged(juce::ComboBox* comboBox)
+ChordData ChordModifierDialog::getEditedChord() const
 {
-    if (!contentComponent) return;
-    
-    if (comboBox == contentComponent->extensionCombo.get())
-    {
-        auto text = comboBox->getText();
-        modifiedChord.extension = (text == "None") ? "" : text;
-    }
-    else if (comboBox == contentComponent->inversionCombo.get())
-    {
-        auto text = comboBox->getText();
-        modifiedChord.inversion = (text == "Root Position") ? "" : text;
-    }
-    else if (comboBox == contentComponent->voicingCombo.get())
-    {
-        auto text = comboBox->getText();
-        modifiedChord.voicing = text;
-        contentComponent->updateCustomVoicingVisibility();
-    }
-    else if (comboBox == contentComponent->arpModeCombo.get())
-    {
-        auto text = comboBox->getText();
-        modifiedChord.arpMode = (text == "None") ? "" : text;
-    }
-    else if (comboBox == contentComponent->arpLengthCombo.get())
-    {
-        modifiedChord.arpLength = comboBox->getText();
-    }
+    return content != nullptr ? content->getEdited() : ChordData();
 }
 
-void ChordModifierDialog::sliderValueChanged(juce::Slider* slider)
+void ChordModifierDialog::launch(juce::Component* centreAround)
 {
-    if (!contentComponent) return;
-    
-    if (slider == contentComponent->noteCountSlider.get())
-    {
-        modifiedChord.customVoicing.numNotes = static_cast<int>(slider->getValue());
-    }
-    else if (slider == contentComponent->positionSlider.get())
-    {
-        modifiedChord.customVoicing.position = static_cast<int>(slider->getValue());
-    }
-    else if (slider == contentComponent->spreadSlider.get())
-    {
-        modifiedChord.customVoicing.spreadType = static_cast<int>(slider->getValue());
-    }
+    centreAroundComponent(centreAround, getWidth(), getHeight());
+    setVisible(true);
+    enterModalState(true, nullptr, true);   // deleted when dismissed
 }
 
-void ChordModifierDialog::updateChordFromUI()
+void ChordModifierDialog::closeButtonPressed()
 {
-    // All updates are done in real-time via the listeners above
-    // This method is here for any final validation or processing if needed
+    finish(false);
 }
 
-//==============================================================================
-// ContentComponent Implementation
-ChordModifierDialog::ContentComponent::ContentComponent(ChordData& chordData, ChordModifierDialog& parent)
-    : modifiedChord(chordData), parentDialog(parent)
+void ChordModifierDialog::finish(bool apply)
 {
-    setupExtensionSection();
-    setupInversionSection();
-    setupVoicingSection();
-    setupArpeggiatorSection();
-    setupCustomVoicingSection();
-    setupActionButtons();
-    
-    updateCustomVoicingVisibility();
-}
+    if (finished)
+        return;
 
-void ChordModifierDialog::ContentComponent::paint(juce::Graphics& g)
-{
-    // Fill background
-    g.fillAll(ModernLookAndFeel::Colors::background);
-    
-    // Draw header with chord name
-    auto headerBounds = getLocalBounds().removeFromTop(50);
-    
-    g.setColour(ModernLookAndFeel::Colors::textPrimary);
-    g.setFont(ModernLookAndFeel::Typography::getHeaderFont());
-    g.drawText("Editing: " + modifiedChord.roman, headerBounds, juce::Justification::centred);
-}
+    finished = true;
 
-void ChordModifierDialog::ContentComponent::resized()
-{
-    auto bounds = getLocalBounds().reduced(ModernLookAndFeel::Metrics::spacingLG);
-    
-    // Header space
-    bounds.removeFromTop(50);
-    
-    // Extension section
-    if (extensionGroup)
-    {
-        extensionGroup->setBounds(bounds.removeFromTop(80));
-        bounds.removeFromTop(ModernLookAndFeel::Metrics::spacingMD);
-    }
-    
-    // Inversion section
-    if (inversionGroup)
-    {
-        inversionGroup->setBounds(bounds.removeFromTop(80));
-        bounds.removeFromTop(ModernLookAndFeel::Metrics::spacingMD);
-    }
-    
-    // Voicing section
-    if (voicingGroup)
-    {
-        voicingGroup->setBounds(bounds.removeFromTop(80));
-        bounds.removeFromTop(ModernLookAndFeel::Metrics::spacingMD);
-    }
-    
-    // Arpeggiator section
-    if (arpeggiatorGroup)
-    {
-        arpeggiatorGroup->setBounds(bounds.removeFromTop(100));
-        bounds.removeFromTop(ModernLookAndFeel::Metrics::spacingMD);
-    }
-    
-    // Custom voicing section (variable height based on visibility)
-    if (customVoicingGroup && customVoicingGroup->isVisible())
-    {
-        customVoicingGroup->setBounds(bounds.removeFromTop(160));
-        bounds.removeFromTop(ModernLookAndFeel::Metrics::spacingMD);
-    }
-    
-    // Action buttons at bottom
-    auto buttonArea = bounds.removeFromBottom(ModernLookAndFeel::Metrics::buttonHeight);
-    auto buttonWidth = (buttonArea.getWidth() - (ModernLookAndFeel::Metrics::spacingMD * 2)) / 3;
-    
-    if (previewButton)
-    {
-        previewButton->setBounds(buttonArea.removeFromLeft(buttonWidth));
-        buttonArea.removeFromLeft(ModernLookAndFeel::Metrics::spacingMD);
-    }
-    
-    if (cancelButton)
-    {
-        cancelButton->setBounds(buttonArea.removeFromLeft(buttonWidth));
-        buttonArea.removeFromLeft(ModernLookAndFeel::Metrics::spacingMD);
-    }
-    
-    if (okButton)
-        okButton->setBounds(buttonArea);
-}
+    if (apply && onApply)
+        onApply(getEditedChord());
 
-void ChordModifierDialog::ContentComponent::setupExtensionSection()
-{
-    extensionGroup = std::make_unique<juce::GroupComponent>("extensionGroup", "Extensions");
-    extensionGroup->setTextLabelPosition(juce::Justification::centredLeft);
-    addAndMakeVisible(*extensionGroup);
-    
-    extensionCombo = std::make_unique<juce::ComboBox>("extensionCombo");
-    extensionCombo->addItemList({
-        "None", "7", "maj7", "9", "maj9", "11", "maj11", "13", "maj13",
-        "add9", "add11", "sus2", "sus4", "6", "dim", "aug", "b5", "#5"
-    }, 1);
-    
-    // Set current value or default
-    auto currentExtension = modifiedChord.extension.isEmpty() ? "None" : modifiedChord.extension;
-    extensionCombo->setText(currentExtension, juce::dontSendNotification);
-    
-    extensionCombo->addListener(&parentDialog);
-    extensionCombo->setAccessible(true);
-    extensionCombo->setTitle("Chord extension");
-    extensionGroup->addAndMakeVisible(*extensionCombo);
-    
-    // Position within group
-    extensionCombo->setBounds(20, 30, extensionGroup->getWidth() - 40, 30);
-}
+    if (onClosed)
+        onClosed();
 
-void ChordModifierDialog::ContentComponent::setupInversionSection()
-{
-    inversionGroup = std::make_unique<juce::GroupComponent>("inversionGroup", "Inversions");
-    inversionGroup->setTextLabelPosition(juce::Justification::centredLeft);
-    addAndMakeVisible(*inversionGroup);
-    
-    inversionCombo = std::make_unique<juce::ComboBox>("inversionCombo");
-    inversionCombo->addItemList({"Root Position", "1st Inversion", "2nd Inversion", "3rd Inversion"}, 1);
-    
-    // Set current value or default
-    auto currentInversion = modifiedChord.inversion.isEmpty() ? "Root Position" : modifiedChord.inversion;
-    inversionCombo->setText(currentInversion, juce::dontSendNotification);
-    
-    inversionCombo->addListener(&parentDialog);
-    inversionCombo->setAccessible(true);
-    inversionCombo->setTitle("Chord inversion");
-    inversionGroup->addAndMakeVisible(*inversionCombo);
-    
-    // Position within group
-    inversionCombo->setBounds(20, 30, inversionGroup->getWidth() - 40, 30);
-}
-
-void ChordModifierDialog::ContentComponent::setupVoicingSection()
-{
-    voicingGroup = std::make_unique<juce::GroupComponent>("voicingGroup", "Voicing");
-    voicingGroup->setTextLabelPosition(juce::Justification::centredLeft);
-    addAndMakeVisible(*voicingGroup);
-    
-    voicingCombo = std::make_unique<juce::ComboBox>("voicingCombo");
-    voicingCombo->addItemList({"Close", "Open", "Drop 2", "Drop 3", "Spread", "Custom"}, 1);
-    
-    // Set current value or default
-    auto currentVoicing = modifiedChord.voicing.isEmpty() ? "Close" : modifiedChord.voicing;
-    voicingCombo->setText(currentVoicing, juce::dontSendNotification);
-    
-    voicingCombo->addListener(&parentDialog);
-    voicingCombo->setAccessible(true);
-    voicingCombo->setTitle("Chord voicing style");
-    voicingGroup->addAndMakeVisible(*voicingCombo);
-    
-    // Position within group
-    voicingCombo->setBounds(20, 30, voicingGroup->getWidth() - 40, 30);
-}
-
-void ChordModifierDialog::ContentComponent::setupArpeggiatorSection()
-{
-    arpeggiatorGroup = std::make_unique<juce::GroupComponent>("arpeggiatorGroup", "Arpeggiator");
-    arpeggiatorGroup->setTextLabelPosition(juce::Justification::centredLeft);
-    addAndMakeVisible(*arpeggiatorGroup);
-    
-    // Arpeggiator mode
-    arpModeCombo = std::make_unique<juce::ComboBox>("arpModeCombo");
-    // Offer exactly the modes ArpeggiatorEngine implements.
-    for (int i = 0; i < static_cast<int>(MusicTheoryEngine::ARP_MODE_NAMES.size()); ++i)
-        arpModeCombo->addItem(MusicTheoryEngine::ARP_MODE_NAMES[static_cast<size_t>(i)], i + 1);
-
-    // A mode name the engine does not know (e.g. a legacy name) would render an empty
-    // combo and play as "None"; show "None" instead.
-    juce::String currentArpMode = modifiedChord.arpMode.isEmpty() ? juce::String("None") : modifiedChord.arpMode;
-    if (std::find(MusicTheoryEngine::ARP_MODE_NAMES.begin(), MusicTheoryEngine::ARP_MODE_NAMES.end(),
-                  currentArpMode) == MusicTheoryEngine::ARP_MODE_NAMES.end())
-        currentArpMode = "None";
-    arpModeCombo->setText(currentArpMode, juce::dontSendNotification);
-    
-    arpModeCombo->addListener(&parentDialog);
-    arpModeCombo->setAccessible(true);
-    arpModeCombo->setTitle("Arpeggiator mode");
-    arpeggiatorGroup->addAndMakeVisible(*arpModeCombo);
-    
-    // Arpeggiator length
-    arpLengthCombo = std::make_unique<juce::ComboBox>("arpLengthCombo");
-    arpLengthCombo->addItemList({"1/16", "1/8", "1/4", "1/2", "1/1", "2/1"}, 1);
-    
-    auto currentArpLength = modifiedChord.arpLength.isEmpty() ? "1/8" : modifiedChord.arpLength;
-    arpLengthCombo->setText(currentArpLength, juce::dontSendNotification);
-    
-    arpLengthCombo->addListener(&parentDialog);
-    arpLengthCombo->setAccessible(true);
-    arpLengthCombo->setTitle("Arpeggiator note length");
-    arpeggiatorGroup->addAndMakeVisible(*arpLengthCombo);
-    
-    // Position within group
-    arpModeCombo->setBounds(20, 30, (arpeggiatorGroup->getWidth() - 60) / 2, 30);
-    arpLengthCombo->setBounds(30 + (arpeggiatorGroup->getWidth() - 60) / 2, 30, (arpeggiatorGroup->getWidth() - 60) / 2, 30);
-}
-
-void ChordModifierDialog::ContentComponent::setupCustomVoicingSection()
-{
-    customVoicingGroup = std::make_unique<juce::GroupComponent>("customVoicingGroup", "Custom Voicing");
-    customVoicingGroup->setTextLabelPosition(juce::Justification::centredLeft);
-    addAndMakeVisible(*customVoicingGroup);
-    
-    // Note count slider
-    noteCountSlider = std::make_unique<juce::Slider>("noteCountSlider");
-    noteCountSlider->setSliderStyle(juce::Slider::LinearHorizontal);
-    noteCountSlider->setTextBoxStyle(juce::Slider::TextBoxRight, false, 50, 20);
-    noteCountSlider->setRange(3, 8, 1);
-    noteCountSlider->setValue(modifiedChord.customVoicing.numNotes);
-    noteCountSlider->addListener(&parentDialog);
-    customVoicingGroup->addAndMakeVisible(*noteCountSlider);
-    
-    noteCountLabel = std::make_unique<juce::Label>("noteCountLabel", "Notes:");
-    noteCountLabel->attachToComponent(noteCountSlider.get(), true);
-    customVoicingGroup->addAndMakeVisible(*noteCountLabel);
-    
-    // Position slider
-    positionSlider = std::make_unique<juce::Slider>("positionSlider");
-    positionSlider->setSliderStyle(juce::Slider::LinearHorizontal);
-    positionSlider->setTextBoxStyle(juce::Slider::TextBoxRight, false, 50, 20);
-    positionSlider->setRange(0, 7, 1);
-    positionSlider->setValue(modifiedChord.customVoicing.position);
-    positionSlider->addListener(&parentDialog);
-    customVoicingGroup->addAndMakeVisible(*positionSlider);
-    
-    positionLabel = std::make_unique<juce::Label>("positionLabel", "Octave:");
-    positionLabel->attachToComponent(positionSlider.get(), true);
-    customVoicingGroup->addAndMakeVisible(*positionLabel);
-    
-    // Spread slider
-    spreadSlider = std::make_unique<juce::Slider>("spreadSlider");
-    spreadSlider->setSliderStyle(juce::Slider::LinearHorizontal);
-    spreadSlider->setTextBoxStyle(juce::Slider::TextBoxRight, false, 50, 20);
-    spreadSlider->setRange(0, 5, 1);
-    spreadSlider->setValue(modifiedChord.customVoicing.spreadType);
-    spreadSlider->addListener(&parentDialog);
-    customVoicingGroup->addAndMakeVisible(*spreadSlider);
-    
-    spreadLabel = std::make_unique<juce::Label>("spreadLabel", "Spread:");
-    spreadLabel->attachToComponent(spreadSlider.get(), true);
-    customVoicingGroup->addAndMakeVisible(*spreadLabel);
-    
-    // Position sliders within group
-    noteCountSlider->setBounds(80, 30, customVoicingGroup->getWidth() - 100, 25);
-    positionSlider->setBounds(80, 60, customVoicingGroup->getWidth() - 100, 25);
-    spreadSlider->setBounds(80, 90, customVoicingGroup->getWidth() - 100, 25);
-}
-
-void ChordModifierDialog::ContentComponent::setupActionButtons()
-{
-    // Preview button
-    previewButton = std::make_unique<juce::TextButton>("Preview");
-    previewButton->addListener(&parentDialog);
-    previewButton->setColour(juce::TextButton::buttonOnColourId, ModernLookAndFeel::Colors::info);
-    previewButton->setAccessible(true);
-    previewButton->setTitle("Preview chord modifications");
-    addAndMakeVisible(*previewButton);
-    
-    // Cancel button
-    cancelButton = std::make_unique<juce::TextButton>("Cancel");
-    cancelButton->addListener(&parentDialog);
-    cancelButton->setColour(juce::TextButton::buttonOnColourId, ModernLookAndFeel::Colors::textSecondary);
-    cancelButton->setAccessible(true);
-    cancelButton->setTitle("Cancel changes");
-    addAndMakeVisible(*cancelButton);
-    
-    // OK button
-    okButton = std::make_unique<juce::TextButton>("Apply");
-    okButton->addListener(&parentDialog);
-    okButton->setColour(juce::TextButton::buttonOnColourId, ModernLookAndFeel::Colors::primary);
-    okButton->setAccessible(true);
-    okButton->setTitle("Apply chord modifications");
-    addAndMakeVisible(*okButton);
-}
-
-void ChordModifierDialog::ContentComponent::updateCustomVoicingVisibility()
-{
-    bool showCustom = voicingCombo && voicingCombo->getText() == "Custom";
-    if (customVoicingGroup)
-        customVoicingGroup->setVisible(showCustom);
-    
-    // Resize dialog if needed
-    parentDialog.setSize(500, showCustom ? 760 : 600);
-    resized();
+    exitModalState(apply ? 1 : 0);
 }
 
 } // namespace ChordFoundry

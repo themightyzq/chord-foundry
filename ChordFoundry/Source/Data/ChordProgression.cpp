@@ -44,6 +44,14 @@ void ChordProgression::removeChord(int index) {
     }
 }
 
+bool ChordProgression::updateChord(int index, const ChordData& newData) {
+    if (!isValidChordIndex(index))
+        return false;
+
+    chords[static_cast<size_t>(index)] = newData;
+    return true;
+}
+
 void ChordProgression::clearChords() {
     chords.clear();
     patternBlocks.clear();
@@ -68,11 +76,56 @@ void ChordProgression::addBlock(const BlockData& block) {
     if (isValidChordIndex(block.chordIndex) && 
         isValidStep(block.startStep) &&
         block.lengthSteps > 0 &&
-        (block.startStep + block.lengthSteps) <= MAX_STEPS) {
+        (block.startStep + block.lengthSteps) <= MAX_STEPS &&
+        isPlacementFree(patternBlocks, -1, block)) {
         
         patternBlocks.push_back(block);
         validateBlockData();
     }
+}
+
+bool ChordProgression::isPlacementFree(const std::vector<BlockData>& blocks, int ignoreIndex, const BlockData& candidate) {
+    for (int i = 0; i < static_cast<int>(blocks.size()); ++i) {
+        if (i != ignoreIndex && candidate.overlaps(blocks[static_cast<size_t>(i)]))
+            return false;
+    }
+    return true;
+}
+
+int ChordProgression::clampMoveStart(const BlockData& block, int desiredStart) {
+    return juce::jlimit(0, juce::jmax(0, MAX_STEPS - block.lengthSteps), desiredStart);
+}
+
+int ChordProgression::maxResizeLength(const std::vector<BlockData>& blocks, int index) {
+    if (index < 0 || index >= static_cast<int>(blocks.size()))
+        return 0;
+
+    const auto& block = blocks[static_cast<size_t>(index)];
+    int limit = MAX_STEPS - block.startStep;
+
+    for (int i = 0; i < static_cast<int>(blocks.size()); ++i) {
+        const auto& other = blocks[static_cast<size_t>(i)];
+        if (i != index && other.chordIndex == block.chordIndex && other.startStep >= block.startStep + 1)
+            limit = juce::jmin(limit, other.startStep - block.startStep);
+    }
+
+    return juce::jmax(1, limit);
+}
+
+int ChordProgression::freeRunLength(const std::vector<BlockData>& blocks, int chordIndex, int startStep, int desiredLength) {
+    int length = 0;
+
+    for (int step = startStep; step < startStep + desiredLength && step < MAX_STEPS; ++step) {
+        bool taken = false;
+        for (const auto& block : blocks)
+            taken = taken || (block.chordIndex == chordIndex && block.containsStep(step));
+
+        if (taken)
+            break;
+        ++length;
+    }
+
+    return length;
 }
 
 void ChordProgression::removeBlock(int blockIndex) {

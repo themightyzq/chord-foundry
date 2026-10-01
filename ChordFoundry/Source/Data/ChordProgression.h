@@ -137,6 +137,9 @@ public:
     // Chord management
     void addChord(const ChordData& chord);
     void removeChord(int index);
+    // Replaces the chord at index (its modifiers, arpeggiator and voicing settings). Pattern
+    // blocks refer to chords by index, so they follow the change. Returns false for a bad index.
+    bool updateChord(int index, const ChordData& newData);
     void clearChords();
     void randomizeChords();
     
@@ -164,6 +167,18 @@ public:
     // Block operations
     int findBlockAt(int chordIndex, int step) const;
     bool canPlaceBlock(int chordIndex, int startStep, int lengthSteps) const;
+    // Placement rules shared by the pattern editor's drag handling and the model. Blocks of
+    // the same chord may not overlap; blocks of different chords may (they sound together).
+    static bool isPlacementFree(const std::vector<BlockData>& blocks, int ignoreIndex, const BlockData& candidate);
+    // Start step closest to desiredStart that keeps the whole block on the 32-step grid.
+    static int clampMoveStart(const BlockData& block, int desiredStart);
+    // Longest the block at `index` can be made without running into the next block of the
+    // same chord or off the end of the grid.
+    static int maxResizeLength(const std::vector<BlockData>& blocks, int index);
+    // How many steps (up to desiredLength) a new block of `chordIndex` starting at startStep
+    // can cover before it would reach another block of that chord. 0 if startStep is taken.
+    static int freeRunLength(const std::vector<BlockData>& blocks, int chordIndex, int startStep, int desiredLength);
+
     void moveBlock(int blockIndex, int newStartStep);
     void resizeBlock(int blockIndex, int newLength);
     

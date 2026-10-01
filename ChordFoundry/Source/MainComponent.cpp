@@ -4,6 +4,7 @@
 #include "UI/SettingsPanelComponent.h"
 #include "UI/StructurePanelComponent.h"
 #include "UI/PatternEditorComponent.h"
+#include "UI/ChordModifierDialog.h"
 #include "Audio/ChordSynthesizer.h"
 #include "Audio/SequencerPatternBuilder.h"
 #include "MusicTheory/MusicTheoryEngine.h"
@@ -162,6 +163,9 @@ MainComponent::~MainComponent()
 
     if (audioSettingsWindow != nullptr)
         delete audioSettingsWindow.getComponent();
+
+    if (modifierWindow != nullptr)
+        delete modifierWindow.getComponent();
 
     stopTimer();
     if (isPlaying)
@@ -530,6 +534,11 @@ void MainComponent::onChordAdded()
         
         updateStructurePanelState();
         updatePatternEditorState();
+
+        // Select the new chord: the Modifiers button and the pattern grid then work on it.
+        const int newIndex = chordProgression->getChordCount() - 1;
+        structurePanel->setCurrentChordIndex(newIndex);
+        patternEditor->setSelectedChordIndex(newIndex);
         selectedRoman.clear();
         updateChordPanelState();
         modelChanged();
@@ -548,13 +557,46 @@ void MainComponent::onChordRemoved(int index)
 
 void MainComponent::onChordModified(int index, const ChordData& newData)
 {
-    juce::ignoreUnused(newData);
-
-    if (chordProgression->isValidChordIndex(index)) {
-        // TODO: Implement chord modification in ChordProgression class
+    // The progression is the source of truth: the change goes through it, then the panels,
+    // the playing pattern and the unsaved-changes state follow. (The app has no undo stack.)
+    if (chordProgression->updateChord(index, newData)) {
         DBG("Chord modified at index: " + juce::String(index));
         updateStructurePanelState();
+        modelChanged();
     }
+}
+
+void MainComponent::showChordModifiers(int index)
+{
+    if (! chordProgression->isValidChordIndex(index))
+        return;
+
+    if (modifierWindow != nullptr)
+    {
+        modifierWindow->toFront(true);
+        return;
+    }
+
+    auto* dialog = new ChordModifierDialog(chordProgression->getChord(index));
+
+    dialog->onPreview = [this](const ChordData& chord)
+    {
+        const auto frequencies = MusicTheoryEngine::getChordFrequencies(chord.roman, currentKey, currentMode, chord);
+        synthesizer->playChord(frequencies);
+    };
+
+    dialog->onApply = [this, index](const ChordData& edited)
+    {
+        onChordModified(index, edited);
+    };
+
+    dialog->onClosed = [this]
+    {
+        stopChordPreview();
+    };
+
+    modifierWindow = dialog;
+    dialog->launch(this);
 }
 
 void MainComponent::onClearAllChords()
@@ -836,6 +878,10 @@ void MainComponent::setupCallbacks()
         patternEditor->setSelectedChordIndex(index);
     };
     
+    structurePanel->onModifyChord = [this](int index) {
+        this->showChordModifiers(index);
+    };
+    
     structurePanel->onChordRemoved = [this](int index) {
         this->onChordRemoved(index);
     };
@@ -992,6 +1038,11 @@ bool MainComponent::hasUnsavedChanges() const
 int MainComponent::getChordCountForCheck() const
 {
     return chordProgression->getChordCount();
+}
+
+ChordData MainComponent::getChordForCheck(int index) const
+{
+    return chordProgression->getChord(index);
 }
 
 juce::String MainComponent::getProjectName() const

@@ -10,6 +10,24 @@ StructurePanelComponent::ChordButton::ChordButton(const ChordData& chord, int in
     setAccessible(true);
     setTitle(chord.roman + " chord");
     setDescription("Chord " + juce::String(index + 1) + ": " + chord.roman);
+    setTooltip("Click to select this chord. Double-click or right-click to edit its modifiers "
+               "(extension, inversion, voicing, arpeggiator).");
+}
+
+void StructurePanelComponent::ChordButton::mouseDoubleClick(const juce::MouseEvent& event)
+{
+    juce::ignoreUnused(event);
+    if (onModifyRequested)
+        onModifyRequested(chordIndex);
+}
+
+void StructurePanelComponent::ChordButton::mouseUp(const juce::MouseEvent& event)
+{
+    juce::Button::mouseUp(event);
+
+    // A right-click selects the chord (as a click does) and opens its modifiers.
+    if (event.mods.isPopupMenu() && contains(event.getPosition()) && onModifyRequested)
+        onModifyRequested(chordIndex);
 }
 
 void StructurePanelComponent::ChordButton::paintButton(juce::Graphics& g, 
@@ -141,7 +159,13 @@ void StructurePanelComponent::resized()
     // Progression analysis text sits in its own strip above the buttons (it used to be drawn
     // underneath them).
     bounds.removeFromBottom(24);
-    auto buttonWidth = (buttonArea.getWidth() - (ModernLookAndFeel::Metrics::spacingSM * 2)) / 3;
+    auto buttonWidth = (buttonArea.getWidth() - (ModernLookAndFeel::Metrics::spacingSM * 3)) / 4;
+
+    if (modifiersButton)
+    {
+        modifiersButton->setBounds(buttonArea.removeFromLeft(buttonWidth));
+        buttonArea.removeFromLeft(ModernLookAndFeel::Metrics::spacingSM);
+    }
     
     if (clearButton)
     {
@@ -187,6 +211,7 @@ void StructurePanelComponent::buttonClicked(juce::Button* button)
         if (chordButton.get() == button)
         {
             auto index = chordButton->getChordIndex();
+            setCurrentChordIndex(index);
             if (onChordSelected)
                 onChordSelected(index);
             return;
@@ -194,7 +219,12 @@ void StructurePanelComponent::buttonClicked(juce::Button* button)
     }
     
     // Check control buttons
-    if (button == clearButton.get())
+    if (button == modifiersButton.get())
+    {
+        if (currentChordIndex >= 0 && currentChordIndex < static_cast<int>(chords.size()) && onModifyChord)
+            onModifyChord(currentChordIndex);
+    }
+    else if (button == clearButton.get())
     {
         if (onClearAll)
             onClearAll();
@@ -247,6 +277,8 @@ void StructurePanelComponent::setCurrentChordIndex(int index)
             chordButtons[i]->setIsCurrentChord(static_cast<int>(i) == index);
         }
     }
+
+    updateModifiersButton();
 }
 
 void StructurePanelComponent::clearProgression()
@@ -296,6 +328,16 @@ void StructurePanelComponent::setupUI()
     headerLabel->setJustificationType(juce::Justification::centred);
     addAndMakeVisible(*headerLabel);
     
+    // Modifiers button: edits the selected chord
+    modifiersButton = std::make_unique<juce::TextButton>("Modifiers...");
+    modifiersButton->addListener(this);
+    modifiersButton->setEnabled(false);
+    modifiersButton->setAccessible(true);
+    modifiersButton->setTitle("Edit modifiers of the selected chord");
+    modifiersButton->setTooltip("Edit the selected chord: extension, inversion, voicing and arpeggiator. "
+                                "Select a chord first. Double-click a chord to open this directly.");
+    addAndMakeVisible(*modifiersButton);
+
     // Clear button
     clearButton = std::make_unique<juce::TextButton>("Clear");
     clearButton->addListener(this);
@@ -334,6 +376,9 @@ void StructurePanelComponent::setupUI()
 
 void StructurePanelComponent::updateChordButtons()
 {
+    if (currentChordIndex >= static_cast<int>(chords.size()))
+        currentChordIndex = -1;
+
     // Clear existing buttons
     chordButtons.clear();
     chordContainer->removeAllChildren();
@@ -343,11 +388,25 @@ void StructurePanelComponent::updateChordButtons()
     {
         auto button = std::make_unique<ChordButton>(chords[i], static_cast<int>(i));
         button->addListener(this);
+        button->onModifyRequested = [this](int index)
+        {
+            setCurrentChordIndex(index);
+            if (onModifyChord)
+                onModifyChord(index);
+        };
+        button->setIsCurrentChord(static_cast<int>(i) == currentChordIndex);
         chordContainer->addAndMakeVisible(*button);
         chordButtons.push_back(std::move(button));
     }
     
     updateChordButtonLayout();
+    updateModifiersButton();
+}
+
+void StructurePanelComponent::updateModifiersButton()
+{
+    if (modifiersButton)
+        modifiersButton->setEnabled(currentChordIndex >= 0 && currentChordIndex < static_cast<int>(chords.size()));
 }
 
 void StructurePanelComponent::updateChordButtonLayout()

@@ -33,7 +33,9 @@ SequencerPattern SequencerPatternBuilder::build (const std::vector<ChordData>& c
             for (const auto note : midiNotes)
                 asFloat.push_back (static_cast<float> (note));
 
-            const auto ordered = arpeggiator.getArpeggioSequence (asFloat, effective.arpMode);
+            // Random is shuffled from the block's own content so unrelated edits keep its order.
+            const auto ordered = arpeggiator.getArpeggioSequence (asFloat, effective.arpMode,
+                                                                  ArpeggiatorEngine::seedFor (midiNotes, block.startStep));
             for (const auto note : ordered)
             {
                 if (slot.numNotes < SequencerSlot::maxNotes)

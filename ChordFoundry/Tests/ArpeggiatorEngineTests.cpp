@@ -46,6 +46,45 @@ public:
         ArpeggiatorEngine engine;
         const std::vector<float> notes { 60.0f, 64.0f, 67.0f, 72.0f };
 
+        beginTest("seeded Random: same seed gives the same order, and it is a permutation");
+        {
+            for (std::uint32_t seed : { 1u, 2u, 99u, 123456u })
+            {
+                const auto first = engine.getArpeggioSequence(notes, "Random", seed);
+                const auto second = engine.getArpeggioSequence(notes, "Random", seed);
+                expect(nearlyEqual(first, second), "same seed, same order");
+                expect(isPermutation(first, notes), "still the same notes");
+            }
+
+            std::vector<std::vector<float>> distinct;
+            for (std::uint32_t seed = 0; seed < 30; ++seed)
+            {
+                const auto order = engine.getArpeggioSequence(notes, "Random", seed);
+                bool seen = false;
+                for (const auto& d : distinct)
+                    seen = seen || nearlyEqual(d, order);
+                if (! seen)
+                    distinct.push_back(order);
+            }
+            expect(distinct.size() > 3, "different seeds give different orders");
+        }
+
+        beginTest("seeded overload leaves the other modes alone");
+        {
+            for (const char* mode : { "Up", "Down", "Converge", "Diverge", "Ascending", "Descending", "None" })
+                expect(nearlyEqual(engine.getArpeggioSequence(notes, mode, 7u), engine.getArpeggioSequence(notes, mode)),
+                       juce::String(mode));
+        }
+
+        beginTest("seedFor depends on the notes and the start step only");
+        {
+            const std::vector<int> a { 60, 64, 67 };
+            const std::vector<int> b { 60, 64, 69 };
+            expect(ArpeggiatorEngine::seedFor(a, 4) == ArpeggiatorEngine::seedFor(a, 4));
+            expect(ArpeggiatorEngine::seedFor(a, 4) != ArpeggiatorEngine::seedFor(b, 4));
+            expect(ArpeggiatorEngine::seedFor(a, 4) != ArpeggiatorEngine::seedFor(a, 5));
+        }
+
         beginTest("Up returns notes unchanged");
         expect(nearlyEqual(engine.getArpeggioSequence(notes, "Up"), notes));
 

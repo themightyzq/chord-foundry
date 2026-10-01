@@ -81,6 +81,30 @@ public:
             expect(a == b);
         }
 
+        beginTest("a Random arpeggio exports the same file every time");
+        {
+            ChordData random("I");
+            random.extension = "+7th";
+            random.arpMode = "Random";
+            random.arpLength = "1/16";
+            const std::vector<ChordData> chords { random };
+            const std::vector<BlockData> blocks { makeBlock(0, 0, 16) };
+
+            juce::MemoryBlock reference;
+            for (int i = 0; i < 6; ++i)
+            {
+                const auto file = dir.getChildFile("random" + juce::String(i) + ".mid");
+                expect(MidiExporter::exportToFile(file, blocks, chords, 120.0f, "C", "Major"));
+
+                juce::MemoryBlock data;
+                expect(file.loadFileAsData(data));
+                if (i == 0)
+                    reference = data;
+                else
+                    expect(data == reference, "export " + juce::String(i) + " matches the first");
+            }
+        }
+
         beginTest("export to an unwritable location reports failure");
         {
             const auto bad = dir.getChildFile("no_such_dir").getChildFile("x.mid");

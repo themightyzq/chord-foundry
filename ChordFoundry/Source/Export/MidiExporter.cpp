@@ -72,7 +72,8 @@ bool MidiExporter::exportToFile(const juce::File& outputFile,
             // Reorder the chord's notes using the real arpeggiator engine.
             std::vector<float> notesAsFloat(midiNotes.begin(), midiNotes.end());
             ArpeggiatorEngine arpeggiator;
-            std::vector<float> arpeggiatedFloat = arpeggiator.getArpeggioSequence(notesAsFloat, chord.arpMode);
+            std::vector<float> arpeggiatedFloat = arpeggiator.getArpeggioSequence(notesAsFloat, chord.arpMode,
+                                                                              ArpeggiatorEngine::seedFor(midiNotes, block.startStep));
 
             std::vector<int> sequence;
             sequence.reserve(arpeggiatedFloat.size());
