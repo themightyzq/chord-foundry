@@ -13,7 +13,7 @@ public:
     ChordFoundryApplication() {}
 
     const juce::String getApplicationName() override { return "Chord Foundry"; }
-    const juce::String getApplicationVersion() override { return "1.0.0"; }
+    const juce::String getApplicationVersion() override { return "1.1.0"; }
     bool moreThanOneInstanceAllowed() override { return true; }
 
     //==============================================================================

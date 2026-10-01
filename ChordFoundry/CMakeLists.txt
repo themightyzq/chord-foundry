@@ -7,7 +7,7 @@ if(APPLE)
     # inherits the build machine's OS as its minimum and will not open on older Macs.
     set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version")
 endif()
-project(ChordFoundry VERSION 1.0.0 LANGUAGES CXX C)
+project(ChordFoundry VERSION 1.1.0 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -31,7 +31,7 @@ juce_add_gui_app(ChordFoundry
     COMPANY_EMAIL "connect@zq-sfx.com"
     BUNDLE_ID "com.zqsfx.chordfoundry"
     PRODUCT_NAME "Chord Foundry"
-    VERSION "1.0.0")
+    VERSION "1.1.0")
 
 # Add source files
 target_sources(ChordFoundry PRIVATE
@@ -151,7 +151,7 @@ juce_add_console_app(ChordFoundryTests
     COMPANY_NAME "ZQ SFX"
     BUNDLE_ID "com.zqsfx.chordfoundrytests"
     PRODUCT_NAME "ChordFoundryTests"
-    VERSION "1.0.0")
+    VERSION "1.1.0")
 
 target_sources(ChordFoundryTests PRIVATE
     Source/Audio/ArpeggiatorEngine.cpp
